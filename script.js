@@ -124,7 +124,6 @@ async function loadStateFromSupabase() {
         applyState(data.payload);
         writeLocalSnapshot();
         renderAll();
-        setStorageStatus("Supabase подключен", "ok");
         return;
     }
 
