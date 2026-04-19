@@ -115,6 +115,15 @@ function escapeHtml(value) {
         .replace(/'/g, "&#039;");
 }
 
+function sanitizeShiftName(value, fallbackIndex = 0) {
+    const raw = String(value || "").trim();
+    const match = raw.match(/^Смена\s+(\d+)(?:\s+из\s+\d+(?:-?х)?)?$/i);
+    if (match) {
+        return `Смена ${match[1]}`;
+    }
+    return raw || `Смена ${fallbackIndex + 1}`;
+}
+
 function toId(value) {
     return String(value ?? "");
 }
@@ -170,7 +179,7 @@ function isHoliday(dateStr) {
 function createDefaultShifts(count = 4) {
     return Array.from({ length: count }, (_, index) => ({
         id: uid("shift"),
-        name: `Смена ${index + 1} из ${count}-х`
+        name: `Смена ${index + 1}`
     }));
 }
 
@@ -189,7 +198,7 @@ function normalizeGraph(graph, index) {
     const smeny = Array.isArray(graph?.smeny) && graph.smeny.length
         ? graph.smeny.map((item, itemIndex) => ({
             id: toId(item?.id || uid("shift")),
-            name: String(item?.name || `Смена ${itemIndex + 1}`)
+            name: sanitizeShiftName(item?.name, itemIndex)
         }))
         : createDefaultShifts(4);
 
