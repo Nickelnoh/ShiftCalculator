@@ -35,236 +35,18 @@ let currentCellHeight = DEFAULT_CELL_HEIGHT;
 let currentZoom = 100;
 let fullscreenModalInstance = null;
 
-const SUPABASE_TABLE = "app_state";
-const SYNC_DEBOUNCE_MS = 500;
+const SUPABASE_TABLES = {
+    settings: "app_settings",
+    graphs: "graphs",
+    shifts: "shifts",
+    absences: "absences"
+};
 
 let supabaseClient = null;
-let supabaseEnabled = false;
-let pendingSyncTimer = null;
-let syncInFlight = false;
-let hadInitialLocalSnapshot = false;
-
-function getSupabaseConfig() {
-    const rawConfig = window.SUPABASE_CONFIG || {};
-    return {
-        url: String(rawConfig.url || "").trim(),
-        anonKey: String(rawConfig.anonKey || "").trim(),
-        appKey: String(rawConfig.appKey || "shiftmaster-main").trim() || "shiftmaster-main"
-    };
-}
-
-function hasSupabaseConfig() {
-    const config = getSupabaseConfig();
-    return Boolean(config.url && config.anonKey && window.supabase?.createClient);
-}
-
-function setStorageStatus(text, tone = "local") {
-    const element = document.getElementById("storageStatus");
-    if (!element) {
-        return;
-    }
-
-    element.className = `sync-status sync-status-${tone}`;
-    element.textContent = text;
-}
-
-function serializeState() {
-    return {
-        year: currentYear,
-        graphs,
-        activeId: activeGraphId,
-        absences,
-        cellHeight: currentCellHeight
-    };
-}
-
-function hasLocalSnapshot() {
-    return STORAGE_KEYS.graphs in localStorage
-        || STORAGE_KEYS.absences in localStorage
-        || STORAGE_KEYS.year in localStorage
-        || STORAGE_KEYS.activeId in localStorage
-        || STORAGE_KEYS.cellHeight in localStorage;
-}
-
-function initSupabaseClient() {
-    if (!hasSupabaseConfig()) {
-        supabaseClient = null;
-        supabaseEnabled = false;
-        return false;
-    }
-
-    const config = getSupabaseConfig();
-    supabaseClient = window.supabase.createClient(config.url, config.anonKey);
-    supabaseEnabled = true;
-    return true;
-}
-
-async function loadStateFromSupabase() {
-    if (!supabaseEnabled || !supabaseClient) {
-        setStorageStatus("Локально", "local");
-        return;
-    }
-
-    setStorageStatus("Загрузка Supabase...", "loading");
-
-    const config = getSupabaseConfig();
-    const { data, error } = await supabaseClient
-        .from(SUPABASE_TABLE)
-        .select("payload, updated_at")
-        .eq("app_key", config.appKey)
-        .maybeSingle();
-
-    if (error) {
-        console.error("Ошибка загрузки из Supabase", error);
-        setStorageStatus("Ошибка Supabase", "error");
-        return;
-    }
-
-    if (data?.payload) {
-        applyState(data.payload);
-        writeLocalSnapshot();
-        renderAll();
-        return;
-    }
-
-    await saveToSupabase(serializeState(), { immediate: true, silentStatus: true });
-    setStorageStatus(hadInitialLocalSnapshot ? "Перенесено в Supabase" : "Supabase готов", "ok");
-}
-
-async function saveToSupabase(state = serializeState(), { immediate = true, silentStatus = false } = {}) {
-    if (!supabaseEnabled || !supabaseClient) {
-        return;
-    }
-
-    if (syncInFlight && !immediate) {
-        return;
-    }
-
-    syncInFlight = true;
-    if (!silentStatus) {
-        setStorageStatus("Сохранение...", "loading");
-    }
-
-    try {
-        const config = getSupabaseConfig();
-        const { error } = await supabaseClient
-            .from(SUPABASE_TABLE)
-            .upsert({
-                app_key: config.appKey,
-                payload: state,
-                updated_at: new Date().toISOString()
-            }, { onConflict: "app_key" });
-
-        if (error) {
-            throw error;
-        }
-
-        if (!silentStatus) {
-            setStorageStatus("Сохранено в Supabase", "ok");
-        }
-    } catch (error) {
-        console.error("Ошибка сохранения в Supabase", error);
-        setStorageStatus("Ошибка синхронизации", "error");
-    } finally {
-        syncInFlight = false;
-    }
-}
-
-function queueSupabaseSave() {
-    if (!supabaseEnabled || !supabaseClient) {
-        setStorageStatus("Локально", "local");
-        return;
-    }
-
-    window.clearTimeout(pendingSyncTimer);
-    setStorageStatus("Ожидает синхронизации", "pending");
-    pendingSyncTimer = window.setTimeout(() => {
-        saveToSupabase(serializeState(), { immediate: false });
-    }, SYNC_DEBOUNCE_MS);
-}
-
-function writeLocalSnapshot() {
-    try {
-        localStorage.setItem(STORAGE_KEYS.year, String(currentYear));
-        localStorage.setItem(STORAGE_KEYS.graphs, JSON.stringify(graphs));
-        localStorage.setItem(STORAGE_KEYS.activeId, activeGraphId);
-        localStorage.setItem(STORAGE_KEYS.absences, JSON.stringify(absences));
-        localStorage.setItem(STORAGE_KEYS.cellHeight, String(currentCellHeight));
-    } catch (error) {
-        console.error("Ошибка сохранения в localStorage", error);
-        alert("Не удалось сохранить данные в браузере.");
-    }
-}
-
-function applyState(state) {
-    currentYear = clamp(parseInt(state?.year, 10) || DEFAULT_YEAR, 2000, 2100);
-    currentCellHeight = clamp(parseInt(state?.cellHeight, 10) || DEFAULT_CELL_HEIGHT, CELL_HEIGHT_MIN, CELL_HEIGHT_MAX);
-
-    const rawGraphs = Array.isArray(state?.graphs) ? state.graphs : [];
-    graphs = rawGraphs.length
-        ? rawGraphs.map(normalizeGraph)
-        : [createDefaultGraph()];
-
-    const savedActiveId = toId(state?.activeId);
-    activeGraphId = graphs.some(graph => graph.id === savedActiveId) ? savedActiveId : graphs[0].id;
-
-    const rawAbsences = Array.isArray(state?.absences) ? state.absences : [];
-    absences = rawAbsences
-        .map(normalizeAbsence)
-        .filter(item => item.start <= item.end);
-}
-
-
-function isMobileViewport() {
-    return window.matchMedia("(max-width: 991.98px)").matches;
-}
-
-function getMobileSidebarElement() {
-    return document.getElementById("mobileSidebar");
-}
-
-function getMobileSidebarInstance() {
-    const element = getMobileSidebarElement();
-    if (!element || !window.bootstrap?.Offcanvas) {
-        return null;
-    }
-    return bootstrap.Offcanvas.getOrCreateInstance(element);
-}
-
-function closeMobileSidebar() {
-    if (isMobileViewport()) {
-        getMobileSidebarInstance()?.hide();
-    }
-}
-
-function runAfterMobileSidebarClosed(callback) {
-    if (!isMobileViewport()) {
-        callback();
-        return;
-    }
-
-    const sidebar = getMobileSidebarElement();
-    const instance = getMobileSidebarInstance();
-
-    if (!sidebar || !instance || !sidebar.classList.contains("show")) {
-        callback();
-        return;
-    }
-
-    const handler = () => {
-        sidebar.removeEventListener("hidden.bs.offcanvas", handler);
-        callback();
-    };
-
-    sidebar.addEventListener("hidden.bs.offcanvas", handler);
-    instance.hide();
-}
-
-function openCreateModal() {
-    runAfterMobileSidebarClosed(() => {
-        bootstrap.Modal.getOrCreateInstance(document.getElementById("createModal")).show();
-    });
-}
+let remoteSaveTimer = null;
+let remoteSavePromise = Promise.resolve();
+let hasRemoteStateLoaded = false;
+let currentAppKey = "";
 
 function uid(prefix = "id") {
     return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
@@ -293,15 +75,6 @@ function escapeHtml(value) {
         .replace(/>/g, "&gt;")
         .replace(/\"/g, "&quot;")
         .replace(/'/g, "&#039;");
-}
-
-function sanitizeShiftName(value, fallbackIndex = 0) {
-    const raw = String(value || "").trim();
-    const match = raw.match(/^Смена\s+(\d+)(?:\s+из\s+\d+(?:-?х)?)?$/i);
-    if (match) {
-        return `Смена ${match[1]}`;
-    }
-    return raw || `Смена ${fallbackIndex + 1}`;
 }
 
 function toId(value) {
@@ -356,6 +129,20 @@ function isHoliday(dateStr) {
     return HOLIDAYS_BY_YEAR[year]?.has(dateStr) || false;
 }
 
+function normalizeShiftName(value, fallbackIndex = 0) {
+    const raw = String(value ?? "").trim();
+    if (!raw) {
+        return `Смена ${fallbackIndex + 1}`;
+    }
+
+    const match = raw.match(/^\s*Смена\s+(\d+)/i);
+    if (match) {
+        return `Смена ${match[1]}`;
+    }
+
+    return raw;
+}
+
 function createDefaultShifts(count = 4) {
     return Array.from({ length: count }, (_, index) => ({
         id: uid("shift"),
@@ -378,7 +165,7 @@ function normalizeGraph(graph, index) {
     const smeny = Array.isArray(graph?.smeny) && graph.smeny.length
         ? graph.smeny.map((item, itemIndex) => ({
             id: toId(item?.id || uid("shift")),
-            name: sanitizeShiftName(item?.name, itemIndex)
+            name: normalizeShiftName(item?.name, itemIndex)
         }))
         : createDefaultShifts(4);
 
@@ -402,21 +189,303 @@ function normalizeAbsence(absence) {
     };
 }
 
-function normalizeState() {
-    applyState({
-        year: localStorage.getItem(STORAGE_KEYS.year),
-        cellHeight: localStorage.getItem(STORAGE_KEYS.cellHeight),
-        graphs: safeParseJSON(localStorage.getItem(STORAGE_KEYS.graphs), []),
-        activeId: toId(localStorage.getItem(STORAGE_KEYS.activeId)),
-        absences: safeParseJSON(localStorage.getItem(STORAGE_KEYS.absences), [])
-    });
 
-    writeLocalSnapshot();
+function readLegacyLocalState() {
+    const localYear = clamp(parseInt(localStorage.getItem(STORAGE_KEYS.year), 10) || DEFAULT_YEAR, 2000, 2100);
+    const localCellHeight = clamp(parseInt(localStorage.getItem(STORAGE_KEYS.cellHeight), 10) || DEFAULT_CELL_HEIGHT, CELL_HEIGHT_MIN, CELL_HEIGHT_MAX);
+
+    const rawGraphs = safeParseJSON(localStorage.getItem(STORAGE_KEYS.graphs), []);
+    const localGraphs = Array.isArray(rawGraphs) && rawGraphs.length
+        ? rawGraphs.map(normalizeGraph)
+        : [createDefaultGraph()];
+
+    const savedActiveId = toId(localStorage.getItem(STORAGE_KEYS.activeId));
+    const localActiveId = localGraphs.some(graph => graph.id === savedActiveId) ? savedActiveId : localGraphs[0].id;
+
+    const rawAbsences = safeParseJSON(localStorage.getItem(STORAGE_KEYS.absences), []);
+    const localAbsences = Array.isArray(rawAbsences)
+        ? rawAbsences.map(normalizeAbsence).filter(item => item.start <= item.end)
+        : [];
+
+    return {
+        year: localYear,
+        graphs: localGraphs,
+        activeId: localActiveId,
+        absences: localAbsences,
+        cellHeight: localCellHeight
+    };
 }
 
-function save() {
+function buildStateSnapshot() {
+    return {
+        year: currentYear,
+        graphs: graphs.map((graph) => ({
+            id: graph.id,
+            name: graph.name,
+            type: graph.type,
+            firstShiftDate: graph.firstShiftDate,
+            smeny: graph.smeny.map((smena) => ({
+                id: smena.id,
+                name: smena.name
+            }))
+        })),
+        activeId: activeGraphId,
+        absences: absences.map((item) => ({
+            id: item.id,
+            graphId: item.graphId,
+            smenaId: item.smenaId,
+            type: item.type,
+            start: item.start,
+            end: item.end
+        })),
+        cellHeight: currentCellHeight
+    };
+}
+
+function applySnapshot(snapshot) {
+    const safeState = snapshot && typeof snapshot === "object" ? snapshot : {};
+    currentYear = clamp(parseInt(safeState.year, 10) || DEFAULT_YEAR, 2000, 2100);
+    currentCellHeight = clamp(parseInt(safeState.cellHeight, 10) || DEFAULT_CELL_HEIGHT, CELL_HEIGHT_MIN, CELL_HEIGHT_MAX);
+
+    const incomingGraphs = Array.isArray(safeState.graphs) && safeState.graphs.length
+        ? safeState.graphs.map(normalizeGraph)
+        : [createDefaultGraph()];
+
+    graphs = incomingGraphs;
+
+    const savedActiveId = toId(safeState.activeId);
+    activeGraphId = graphs.some(graph => graph.id === savedActiveId) ? savedActiveId : graphs[0].id;
+
+    const knownShiftIds = new Set(graphs.flatMap((graph) => graph.smeny.map((smena) => smena.id)));
+    const knownGraphIds = new Set(graphs.map((graph) => graph.id));
+    absences = Array.isArray(safeState.absences)
+        ? safeState.absences
+            .map(normalizeAbsence)
+            .filter((item) => item.start <= item.end && knownGraphIds.has(item.graphId) && knownShiftIds.has(item.smenaId))
+        : [];
+}
+
+function normalizeState() {
+    applySnapshot(readLegacyLocalState());
+    save({ skipRemote: true });
+}
+
+function writeLocalSnapshot() {
+    try {
+        localStorage.setItem(STORAGE_KEYS.year, String(currentYear));
+        localStorage.setItem(STORAGE_KEYS.graphs, JSON.stringify(graphs));
+        localStorage.setItem(STORAGE_KEYS.activeId, activeGraphId);
+        localStorage.setItem(STORAGE_KEYS.absences, JSON.stringify(absences));
+        localStorage.setItem(STORAGE_KEYS.cellHeight, String(currentCellHeight));
+    } catch (error) {
+        console.error("Ошибка сохранения в localStorage", error);
+        alert("Не удалось сохранить данные в браузере.");
+    }
+}
+
+function getSupabaseConfig() {
+    const raw = window.SUPABASE_CONFIG || {};
+    return {
+        url: String(raw.url || "").trim(),
+        anonKey: String(raw.anonKey || "").trim(),
+        appKey: String(raw.appKey || "shiftmaster-main").trim() || "shiftmaster-main"
+    };
+}
+
+function isSupabaseConfigured() {
+    const config = getSupabaseConfig();
+    return Boolean(config.url && config.anonKey && window.supabase?.createClient);
+}
+
+function ensureSupabaseClient() {
+    if (!isSupabaseConfigured()) {
+        return null;
+    }
+
+    if (!supabaseClient) {
+        const config = getSupabaseConfig();
+        supabaseClient = window.supabase.createClient(config.url, config.anonKey, {
+            auth: { persistSession: false }
+        });
+        currentAppKey = config.appKey;
+    }
+
+    return supabaseClient;
+}
+
+async function loadFromSupabase() {
+    const client = ensureSupabaseClient();
+    if (!client) {
+        return false;
+    }
+
+    const config = getSupabaseConfig();
+    currentAppKey = config.appKey;
+
+    try {
+        const [settingsResponse, graphsResponse, shiftsResponse, absencesResponse] = await Promise.all([
+            client.from(SUPABASE_TABLES.settings).select("year, active_graph_id, cell_height").eq("app_key", config.appKey).maybeSingle(),
+            client.from(SUPABASE_TABLES.graphs).select("id, name, type, first_shift_date, sort_order").eq("app_key", config.appKey).order("sort_order", { ascending: true }),
+            client.from(SUPABASE_TABLES.shifts).select("id, graph_id, name, sort_order").eq("app_key", config.appKey).order("sort_order", { ascending: true }),
+            client.from(SUPABASE_TABLES.absences).select("id, graph_id, shift_id, absence_type, start_date, end_date").eq("app_key", config.appKey).order("start_date", { ascending: true })
+        ]);
+
+        if (settingsResponse.error) throw settingsResponse.error;
+        if (graphsResponse.error) throw graphsResponse.error;
+        if (shiftsResponse.error) throw shiftsResponse.error;
+        if (absencesResponse.error) throw absencesResponse.error;
+
+        const graphRows = graphsResponse.data || [];
+        const shiftRows = shiftsResponse.data || [];
+        const absenceRows = absencesResponse.data || [];
+        const settingsRow = settingsResponse.data;
+
+        if (!settingsRow && !graphRows.length && !shiftRows.length && !absenceRows.length) {
+            hasRemoteStateLoaded = true;
+            return false;
+        }
+
+        const remoteGraphs = graphRows.map((graphRow, graphIndex) => ({
+            id: toId(graphRow.id),
+            name: String(graphRow.name || `График ${graphIndex + 1}`),
+            type: graphRow.type === "12" ? "12" : "24",
+            firstShiftDate: normalizeIsoDate(graphRow.first_shift_date, currentYear),
+            smeny: shiftRows
+                .filter((shiftRow) => toId(shiftRow.graph_id) === toId(graphRow.id))
+                .map((shiftRow, shiftIndex) => ({
+                    id: toId(shiftRow.id),
+                    name: normalizeShiftName(shiftRow.name, shiftIndex)
+                }))
+        }));
+
+        const remoteAbsences = absenceRows.map((absenceRow) => ({
+            id: toId(absenceRow.id),
+            graphId: toId(absenceRow.graph_id),
+            smenaId: toId(absenceRow.shift_id),
+            type: absenceRow.absence_type === "Больничный" ? "Больничный" : "Отпуск",
+            start: normalizeIsoDate(absenceRow.start_date, currentYear),
+            end: normalizeIsoDate(absenceRow.end_date, currentYear)
+        }));
+
+        applySnapshot({
+            year: settingsRow?.year ?? currentYear,
+            activeId: settingsRow?.active_graph_id ?? "",
+            cellHeight: settingsRow?.cell_height ?? currentCellHeight,
+            graphs: remoteGraphs,
+            absences: remoteAbsences
+        });
+
+        writeLocalSnapshot();
+        hasRemoteStateLoaded = true;
+        return true;
+    } catch (error) {
+        console.error("Ошибка загрузки из Supabase", error);
+        return false;
+    }
+}
+
+async function deleteMissingRows(client, tableName, appKey, currentIds) {
+    const { data, error } = await client.from(tableName).select("id").eq("app_key", appKey);
+    if (error) throw error;
+
+    const existingIds = (data || []).map((item) => toId(item.id));
+    const idsToDelete = existingIds.filter((id) => !currentIds.includes(id));
+
+    if (!idsToDelete.length) {
+        return;
+    }
+
+    const { error: deleteError } = await client.from(tableName).delete().eq("app_key", appKey).in("id", idsToDelete);
+    if (deleteError) throw deleteError;
+}
+
+async function syncStateToSupabase() {
+    const client = ensureSupabaseClient();
+    if (!client) {
+        return;
+    }
+
+    const config = getSupabaseConfig();
+    currentAppKey = config.appKey;
+
+    const graphRows = graphs.map((graph, graphIndex) => ({
+        id: graph.id,
+        app_key: config.appKey,
+        name: graph.name,
+        type: graph.type,
+        first_shift_date: graph.firstShiftDate,
+        sort_order: graphIndex,
+        updated_at: new Date().toISOString()
+    }));
+
+    const shiftRows = graphs.flatMap((graph) => graph.smeny.map((smena, shiftIndex) => ({
+        id: smena.id,
+        app_key: config.appKey,
+        graph_id: graph.id,
+        name: normalizeShiftName(smena.name, shiftIndex),
+        sort_order: shiftIndex,
+        updated_at: new Date().toISOString()
+    })));
+
+    const absenceRows = absences.map((absence) => ({
+        id: absence.id,
+        app_key: config.appKey,
+        graph_id: absence.graphId,
+        shift_id: absence.smenaId,
+        absence_type: absence.type,
+        start_date: absence.start,
+        end_date: absence.end,
+        updated_at: new Date().toISOString()
+    }));
+
+    try {
+        const { error: settingsError } = await client.from(SUPABASE_TABLES.settings).upsert({
+            app_key: config.appKey,
+            year: currentYear,
+            active_graph_id: activeGraphId || null,
+            cell_height: currentCellHeight,
+            updated_at: new Date().toISOString()
+        }, { onConflict: "app_key" });
+        if (settingsError) throw settingsError;
+
+        if (graphRows.length) {
+            const { error: graphUpsertError } = await client.from(SUPABASE_TABLES.graphs).upsert(graphRows, { onConflict: "id" });
+            if (graphUpsertError) throw graphUpsertError;
+        }
+        await deleteMissingRows(client, SUPABASE_TABLES.graphs, config.appKey, graphRows.map((row) => row.id));
+
+        if (shiftRows.length) {
+            const { error: shiftUpsertError } = await client.from(SUPABASE_TABLES.shifts).upsert(shiftRows, { onConflict: "id" });
+            if (shiftUpsertError) throw shiftUpsertError;
+        }
+        await deleteMissingRows(client, SUPABASE_TABLES.shifts, config.appKey, shiftRows.map((row) => row.id));
+
+        if (absenceRows.length) {
+            const { error: absenceUpsertError } = await client.from(SUPABASE_TABLES.absences).upsert(absenceRows, { onConflict: "id" });
+            if (absenceUpsertError) throw absenceUpsertError;
+        }
+        await deleteMissingRows(client, SUPABASE_TABLES.absences, config.appKey, absenceRows.map((row) => row.id));
+    } catch (error) {
+        console.error("Ошибка синхронизации с Supabase", error);
+    }
+}
+
+function queueRemoteSave() {
+    if (!isSupabaseConfigured() || !hasRemoteStateLoaded) {
+        return;
+    }
+
+    clearTimeout(remoteSaveTimer);
+    remoteSaveTimer = setTimeout(() => {
+        remoteSavePromise = remoteSavePromise.then(() => syncStateToSupabase());
+    }, 350);
+}
+
+function save(options = {}) {
     writeLocalSnapshot();
-    queueSupabaseSave();
+    if (!options.skipRemote) {
+        queueRemoteSave();
+    }
 }
 
 function getActiveGraph() {
@@ -812,7 +881,6 @@ function selectGraph(id) {
     activeGraphId = toId(id);
     save();
     renderAll();
-    closeMobileSidebar();
 }
 
 function createGraphWithType(type) {
@@ -933,10 +1001,7 @@ function addAbsenceModal() {
 
     document.getElementById("modalStart").value = "";
     document.getElementById("modalEnd").value = "";
-
-    runAfterMobileSidebarClosed(() => {
-        bootstrap.Modal.getOrCreateInstance(document.getElementById("absenceModal")).show();
-    });
+    new bootstrap.Modal(document.getElementById("absenceModal")).show();
 }
 
 function saveAbsence() {
@@ -1006,7 +1071,6 @@ function applyCellHeight() {
 }
 
 function openFullscreen() {
-    closeMobileSidebar();
     const graph = getActiveGraph();
     if (!graph) {
         return;
@@ -1040,19 +1104,24 @@ function updateZoom() {
     document.getElementById("zoomLevel").textContent = currentZoom;
 }
 
+
 window.addEventListener("load", async () => {
-    hadInitialLocalSnapshot = hasLocalSnapshot();
     normalizeState();
     document.getElementById("newFirstShiftDate").value = `${currentYear}-01-01`;
     renderAll();
 
+    if (isSupabaseConfigured()) {
+        const loaded = await loadFromSupabase();
+        if (loaded) {
+            renderAll();
+        } else {
+            queueRemoteSave();
+        }
+    } else {
+        hasRemoteStateLoaded = true;
+    }
+
     document.getElementById("createModal").addEventListener("show.bs.modal", () => {
         document.getElementById("newFirstShiftDate").value = `${currentYear}-01-01`;
     });
-
-    if (initSupabaseClient()) {
-        await loadStateFromSupabase();
-    } else {
-        setStorageStatus("Локально", "local");
-    }
 });
