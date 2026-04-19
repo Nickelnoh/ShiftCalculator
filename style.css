@@ -24,23 +24,19 @@ body {
 
 body {
     margin: 0;
-    overflow-x: hidden;
     background: #f3f4f6;
     color: var(--text-main);
     font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
 }
 
 .app-shell {
-    min-height: 100dvh;
-    padding-left: 0;
-    padding-right: 0;
+    height: 100%;
 }
 
 .sidebar {
     background: #fff;
     max-height: 100vh;
     overflow: auto;
-    overscroll-behavior: contain;
 }
 
 .sidebar-inner {
@@ -48,7 +44,7 @@ body {
 }
 
 .main-content {
-    min-height: 100dvh;
+    min-height: 100vh;
     background: #f7f7f8;
 }
 
@@ -269,8 +265,6 @@ body {
 
 .schedule-table-wrapper {
     overflow: auto;
-    -webkit-overflow-scrolling: touch;
-    overscroll-behavior: contain;
 }
 
 .schedule-table {
@@ -505,275 +499,38 @@ thead .shift-col {
     border-radius: 8px;
 }
 
-
-.topbar-inner {
-    min-width: 0;
-}
-
-.topbar-leading {
-    min-width: 0;
-    flex: 1 1 320px;
-}
-
-.topbar-actions {
-    flex: 0 0 auto;
-}
-
-.mobile-menu-btn {
-    flex: 0 0 auto;
-    width: 42px;
-    height: 42px;
-    padding: 0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-}
-
-#mobileSidebar {
-    --bs-offcanvas-width: min(92vw, 360px);
-}
-
-.sidebar-inner {
-    min-height: 100%;
-}
-
-.fullscreen-header {
-    gap: 12px;
-}
-
-.fullscreen-controls {
-    flex-wrap: wrap;
-    justify-content: flex-end;
-}
-
 @media (max-width: 991px) {
-    .sidebar.offcanvas-lg {
-        max-height: 100dvh;
-    }
-
     .sidebar {
         max-height: none;
         border-right: none !important;
         border-bottom: 1px solid #e5e7eb;
     }
 
-    .sidebar-inner {
-        padding: 1rem;
-    }
-
     .main-content {
         min-height: auto;
     }
 
-    .main-scroll {
-        overflow: visible !important;
-    }
-
-    .topbar {
-        top: 0;
-    }
-
-    .topbar-inner {
-        align-items: flex-start !important;
-    }
-
     .active-graph-info {
         width: 100%;
-        min-width: 0;
-        align-items: flex-start;
-    }
-
-    .info-strip {
-        gap: 6px;
-    }
-
-    .info-strip-name {
-        max-width: 100%;
-        font-size: 0.96rem;
-        word-break: break-word;
-    }
-
-    .info-strip-meta {
-        min-height: 28px;
-        font-size: 0.8rem;
-        padding: 4px 8px;
     }
 }
 
 @media (max-width: 768px) {
-    .panel-card,
-    .summary-card,
-    .legend-bar,
-    .toolbar-schedule,
-    .table-card {
-        border-radius: 10px;
-    }
-
-    .topbar .p-3,
-    .main-scroll > .p-3,
-    .sidebar-inner {
-        padding: 0.85rem !important;
-    }
-
-    .topbar-actions {
-        width: 100%;
-    }
-
-    .topbar-actions .btn {
-        flex: 1 1 calc(50% - 0.25rem);
-        min-height: 42px;
-        white-space: nowrap;
-    }
-
     .summary-grid {
         grid-template-columns: 1fr;
     }
 
-    .summary-card-values {
-        justify-content: space-between;
-        gap: 10px;
-    }
-
-    .legend-bar {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 8px 10px;
-        align-items: stretch;
-    }
-
-    .legend-note {
-        grid-column: 1 / -1;
-    }
-
-    .toolbar-schedule {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 8px;
-    }
-
-    .toolbar-schedule .btn {
-        width: 100%;
-        min-height: 40px;
-    }
-
-    .toolbar-schedule .small.text-muted {
-        grid-column: 1 / -1;
-    }
-
-    .employee-item-editable {
-        grid-template-columns: 28px 1fr 36px;
-        gap: 8px;
-    }
-
-    .employee-badge {
-        width: 28px;
-        height: 28px;
-        font-size: 0.8rem;
-    }
-
-    .absence-list {
-        max-height: none;
-    }
-
     .schedule-table {
-        --month-col-width: 88px;
-        --shift-col-width: 136px;
-        min-width: 1410px;
-        font-size: 10px;
-    }
-
-    .schedule-table thead th {
-        padding: 3px 4px !important;
+        min-width: 1600px;
+        font-size: 11px;
     }
 
     .day-head,
-    .day-cell,
-    .stat-col,
-    .prod-col {
-        width: 40px;
-        min-width: 40px;
-    }
-
-    .month-col {
-        padding: 0 6px !important;
-    }
-
-    .shift-col {
-        padding: 0 6px !important;
-    }
-
-    .stat-days,
-    .stat-hours,
-    .prod-col {
-        min-width: 58px;
-        width: 58px;
-    }
-
-    .cell-top,
-    .cell-bottom,
-    .stat-stack > div {
-        font-size: 10px;
-    }
-
-    .cell-bottom,
-    .stat-sub {
-        font-size: 9px;
-    }
-
-    .mini-head {
-        font-size: 10px;
-    }
-
-    .fullscreen-header {
-        flex-direction: column;
-        align-items: stretch !important;
-    }
-
-    .fullscreen-controls {
-        justify-content: space-between;
-    }
-
-    .fullscreen-controls .text-muted.small {
-        width: 100%;
+    .day-cell {
+        width: 42px;
+        min-width: 42px;
     }
 }
-
-@media (max-width: 480px) {
-    .topbar-actions .btn {
-        flex: 1 1 100%;
-    }
-
-    .legend-bar {
-        grid-template-columns: 1fr;
-    }
-
-    .schedule-table {
-        --month-col-width: 82px;
-        --shift-col-width: 124px;
-        min-width: 1320px;
-        font-size: 9.5px;
-    }
-
-    .day-head,
-    .day-cell,
-    .stat-col,
-    .prod-col {
-        width: 38px;
-        min-width: 38px;
-    }
-
-    .stat-days,
-    .stat-hours,
-    .prod-col {
-        min-width: 54px;
-        width: 54px;
-    }
-
-    .modal-dialog:not(.modal-fullscreen) {
-        margin: 0.75rem;
-    }
-}
-
 
 
 .sidebar {
@@ -802,58 +559,4 @@ thead .shift-col {
 
 .section-title.simple-title {
     font-size: 0.9rem;
-}
-
-
-.sync-status {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 38px;
-    padding: 6px 12px;
-    border-radius: 999px;
-    border: 1px solid #d7dfeb;
-    background: #fff;
-    color: #475569;
-    font-size: 0.84rem;
-    font-weight: 600;
-    white-space: nowrap;
-}
-
-.sync-status-loading {
-    background: #fff7ed;
-    border-color: #fdba74;
-    color: #9a3412;
-}
-
-.sync-status-ok {
-    background: #ecfdf5;
-    border-color: #86efac;
-    color: #166534;
-}
-
-.sync-status-error {
-    background: #fef2f2;
-    border-color: #fca5a5;
-    color: #991b1b;
-}
-
-.sync-status-local {
-    background: #f8fafc;
-    border-color: #cbd5e1;
-    color: #475569;
-}
-
-.sync-status-pending {
-    background: #eff6ff;
-    border-color: #93c5fd;
-    color: #1d4ed8;
-}
-
-@media (max-width: 768px) {
-    .sync-status {
-        width: 100%;
-        justify-content: center;
-        min-height: 34px;
-    }
 }
