@@ -57,14 +57,26 @@
                         <div id="smenyList" class="mt-3"></div>
                     </section>
 
-                    <section class="panel-card">
+                    <section class="panel-card mb-3">
                         <div class="section-title simple-title">
-                            <span>Кратковременные отвлечения</span>
-                            <button id="addAbsenceButton" onclick="addAbsenceModal()" class="btn btn-sm btn-outline-danger ms-auto">
+                            <span>Отвлечения</span>
+                            <button id="addAbsenceButton" onclick="addAbsenceModal('planned')" class="btn btn-sm btn-outline-danger ms-auto">
                                 <i class="bi bi-plus"></i>
                             </button>
                         </div>
-                        <div id="absencesList" class="absence-list mt-3"></div>
+                        <div class="form-hint mt-2">Плановые и длительные периоды отсутствия.</div>
+                        <div id="plannedAbsencesList" class="absence-list mt-3"></div>
+                    </section>
+
+                    <section class="panel-card">
+                        <div class="section-title simple-title">
+                            <span>Кратковременные отвлечения</span>
+                            <button id="addShortAbsenceButton" onclick="addAbsenceModal('short')" class="btn btn-sm btn-outline-warning ms-auto">
+                                <i class="bi bi-plus"></i>
+                            </button>
+                        </div>
+                        <div class="form-hint mt-2">Незапланированные отвлечения, например отгул или срочный больничный.</div>
+                        <div id="shortAbsencesList" class="absence-list mt-3"></div>
                     </section>
                 </div>
             </aside>
@@ -105,7 +117,7 @@
                             <div class="legend-item"><span class="legend-color legend-holiday"></span>Праздник</div>
                             <div class="legend-item"><span class="legend-color legend-vacation"></span>Отпуск</div>
                             <div class="legend-item"><span class="legend-color legend-sick"></span>Больничный</div>
-                            <div class="legend-item"><span class="legend-color legend-reserve"></span>Подменная</div>
+                            <div class="legend-item"><span class="legend-color legend-dayoff"></span>Отгул</div>
                             <div class="legend-note ms-lg-auto">В ячейке: сверху часы, снизу ночные. Нажмите на ячейку для ручной корректировки.</div>
                         </div>
 
@@ -158,7 +170,7 @@
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title">Добавить отвлечение</h5>
+                    <h5 class="modal-title" id="absenceModalTitle">Добавить отвлечение</h5>
                     <button class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
@@ -172,6 +184,7 @@
                             <option value="Отпуск">Отпуск</option>
                             <option value="Больничный">Больничный</option>
                             <option value="Срочный больничный">Срочный больничный</option>
+                            <option value="Отгул">Отгул</option>
                         </select>
                     </div>
                     <div class="row g-3">
@@ -215,6 +228,7 @@
                             <option value="vacation">Отпуск</option>
                             <option value="sick">Больничный</option>
                             <option value="urgent_sick">Срочный больничный</option>
+                            <option value="dayoff">Отгул</option>
                         </select>
                     </div>
                     <div id="manualHoursRow" class="row g-3 d-none">
