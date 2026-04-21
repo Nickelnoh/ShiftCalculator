@@ -5,13 +5,14 @@
     --line-strong: #b8c0cc;
     --text-main: #222;
     --text-muted: #6b7280;
-    --weekend-bg: #f8d8de;
-    --holiday-bg: #f7e8aa;
-    --vacation-bg: #d7eaf8;
+    --base-cell-bg: #ffc1ff;
+    --weekend-bg: #fdbeb9;
+    --holiday-bg: #ffc1ff;
+    --vacation-bg: #00b0f0;
     --sick-bg: #f8ddca;
     --urgent-sick-bg: #f5d4e7;
-    --manual-bg: #e3f5e1;
-    --off-bg: #f5f6f8;
+    --manual-bg: #fff1a8;
+    --off-bg: #ffc1ff;
     --app-bg: #eef2f7;
     --surface: #ffffff;
     --radius-lg: 18px;
@@ -233,6 +234,46 @@ body.sidebar-open {
     align-items: center;
 }
 
+.employee-main-fields {
+    display: grid;
+    gap: 8px;
+}
+
+.employee-kind-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
+.shift-kind-select {
+    max-width: 150px;
+}
+
+.shift-kind-badge {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 0.76rem;
+    font-weight: 700;
+    border: 1px solid #d9dde5;
+    background: #f8fafc;
+    color: #475569;
+}
+
+.shift-kind-badge.reserve {
+    background: #fff6bf;
+    border-color: #ead46e;
+    color: #7a5a00;
+}
+
+.employee-item-reserve {
+    border-color: #ead46e;
+    background: #fffdf0;
+}
+
 .employee-badge {
     width: 32px;
     height: 32px;
@@ -362,7 +403,8 @@ body.sidebar-open {
     border: 1px solid #d3ddeb;
 }
 
-.legend-work { background: #ffffff; }
+.legend-work { background: var(--base-cell-bg); }
+.legend-reserve { background: #fff1a8; }
 .legend-weekend { background: var(--weekend-bg); }
 .legend-holiday { background: var(--holiday-bg); }
 .legend-vacation { background: var(--vacation-bg); }
@@ -515,7 +557,7 @@ body.sidebar-open {
 }
 
 .is-worked {
-    --cell-fill: #ffffff;
+    --cell-fill: var(--base-cell-bg);
 }
 
 .is-off {
@@ -540,7 +582,7 @@ body.sidebar-open {
 
 .absence-vacation-cell {
     --cell-fill: var(--vacation-bg);
-    color: #095089;
+    color: #083b5c;
 }
 
 .absence-sick-cell {
@@ -785,6 +827,21 @@ thead .shift-col {
 }
 
 @media (max-width: 576px) {
+
+    .employee-item-editable {
+        grid-template-columns: 32px 1fr;
+    }
+
+    .employee-item-editable > .btn {
+        grid-column: 1 / -1;
+        justify-self: end;
+    }
+
+    .shift-kind-select {
+        max-width: 100%;
+        width: 100%;
+    }
+
     .topbar-actions {
         grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
     }
