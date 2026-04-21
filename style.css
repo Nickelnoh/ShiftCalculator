@@ -6,8 +6,8 @@
     --text-main: #222;
     --text-muted: #6b7280;
     --base-cell-bg: #ffffff;
-    --weekend-bg: #f5d5d5;
-    --holiday-bg: #f0dddd;
+    --weekend-bg: #dff1ff;
+    --holiday-bg: #fff2b8;
     --vacation-bg: #00b0f0;
     --sick-bg: #f8ddca;
     --urgent-sick-bg: #f5d4e7;
@@ -564,6 +564,7 @@ body.sidebar-open {
 
 .is-worked {
     --cell-fill: #ffffff;
+    background: #ffffff !important;
 }
 
 .is-off {
@@ -608,6 +609,7 @@ body.sidebar-open {
 
 .manual-work-cell {
     --cell-fill: #ffffff;
+    background: #ffffff !important;
 }
 
 .stat-col,
@@ -946,4 +948,13 @@ body.read-only-mode .schedule-table {
 
 body.read-only-mode .schedule-table thead th {
     top: 0;
+}
+
+.is-worked .cell-lines,
+.is-worked .cell-top,
+.is-worked .cell-bottom,
+.manual-work-cell .cell-lines,
+.manual-work-cell .cell-top,
+.manual-work-cell .cell-bottom {
+    background: #ffffff !important;
 }
