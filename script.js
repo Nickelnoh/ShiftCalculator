@@ -1172,7 +1172,7 @@ function renderDayCell(cell) {
     if (cell.kind === "empty") {
         return `
             <td class="day-cell day-cell-empty">
-                <div class="cell-lines cell-lines-empty"><span>×</span></div>
+                <div class="cell-lines cell-lines-empty"><span></span></div>
             </td>
         `;
     }
@@ -1185,14 +1185,20 @@ function renderDayCell(cell) {
     if (cell.absence) {
         const absenceClass = getAbsenceVisualMeta(cell.absence.type).cellClass;
         classes.push("is-absence", absenceClass);
-    } else if (cell.worked) {
-        classes.push("is-worked");
-    } else if (cell.holiday) {
-        classes.push("is-holiday");
-    } else if (cell.weekend) {
-        classes.push("is-weekend");
     } else {
-        classes.push("is-off");
+        if (cell.worked) {
+            classes.push("is-worked");
+        } else {
+            classes.push("is-off");
+        }
+
+        if (cell.holiday) {
+            classes.push("is-holiday");
+        } else if (cell.preholiday) {
+            classes.push("is-preholiday");
+        } else if (cell.weekend) {
+            classes.push("is-weekend");
+        }
     }
 
     const tooltipParts = [cell.dateStr];
@@ -1706,24 +1712,27 @@ function getExportDayCellAppearance(cell) {
         return { topValue: cell.code || getAbsenceCode(cell.absence.type), bottomValue: "", fill: "FF8EC9FF" };
     }
 
-    if (cell.worked) {
-        return {
-            topValue: cell.hours || "",
-            bottomValue: cell.night || "",
-            fill: "FFFFFFFF"
-        };
-    }
+    const topValue = cell.worked ? (cell.hours || "") : "";
+    const bottomValue = cell.worked ? (cell.night || "") : "";
 
     if (cell.holiday) {
-        return { topValue: "", bottomValue: "", fill: "FFF7D9E6" };
+        return { topValue, bottomValue, fill: "FFF7D9E6" };
     }
 
     if (cell.preholiday) {
-        return { topValue: "", bottomValue: "", fill: "FFFFF5CC" };
+        return { topValue, bottomValue, fill: "FFFFF5CC" };
     }
 
     if (cell.weekend) {
-        return { topValue: "", bottomValue: "", fill: "FFF9DADA" };
+        return { topValue, bottomValue, fill: "FFF9DADA" };
+    }
+
+    if (cell.worked) {
+        return {
+            topValue,
+            bottomValue,
+            fill: "FFFFFFFF"
+        };
     }
 
     return {
