@@ -52,7 +52,8 @@ let remoteSaveTimer = null;
 let remoteSavePromise = Promise.resolve();
 let hasRemoteStateLoaded = false;
 let currentAppKey = "";
-let availableRemoteTables = new Set([SUPABASE_TABLES.settings, SUPABASE_TABLES.graphs, SUPABASE_TABLES.shifts, SUPABASE_TABLES.absences]);
+let availableRemoteTables = new Set([SUPABASE_TABLES.settings, SUPABASE_TABLES.graphs, SUPABASE_TABLES.shifts, SUPABASE_TABLES.absences, SUPABASE_TABLES.overrides]);
+let remoteCapabilities = { shiftType: true };
 
 let isReadOnlyMode = false;
 let readOnlyGraphId = "";
@@ -154,10 +155,19 @@ function normalizeShiftName(value, fallbackIndex = 0) {
     return raw;
 }
 
+function normalizeShiftKind(value) {
+    return String(value || "").toLowerCase() === "reserve" ? "reserve" : "regular";
+}
+
+function getShiftKindLabel(kind) {
+    return normalizeShiftKind(kind) === "reserve" ? "Подменная" : "Основная";
+}
+
 function createDefaultShifts(count = 4) {
     return Array.from({ length: count }, (_, index) => ({
         id: uid("shift"),
-        name: `Смена ${index + 1}`
+        name: `Смена ${index + 1}`,
+        shiftKind: "regular"
     }));
 }
 
@@ -176,7 +186,8 @@ function normalizeGraph(graph, index) {
     const smeny = Array.isArray(graph?.smeny) && graph.smeny.length
         ? graph.smeny.map((item, itemIndex) => ({
             id: toId(item?.id || uid("shift")),
-            name: normalizeShiftName(item?.name, itemIndex)
+            name: normalizeShiftName(item?.name, itemIndex),
+            shiftKind: normalizeShiftKind(item?.shiftKind)
         }))
         : createDefaultShifts(4);
 
@@ -334,6 +345,13 @@ function isMissingRelationError(error) {
     return error.code === "42P01" || error.code === "PGRST205" || text.includes("relation") && text.includes("does not exist") || text.includes("could not find the table");
 }
 
+function isMissingColumnError(error, columnName) {
+    if (!error) return false;
+    const text = `${error.message || ""} ${error.details || ""} ${error.hint || ""}`.toLowerCase();
+    const column = String(columnName || "").toLowerCase();
+    return error.code === "42703" || error.code === "PGRST204" || (column && text.includes(column) && (text.includes("column") || text.includes("schema cache")));
+}
+
 async function selectRemoteRows(client, tableName, columns, appKey, orderColumn = "sort_order") {
     const query = client.from(tableName).select(columns).eq("app_key", appKey);
     const response = orderColumn ? await query.order(orderColumn, { ascending: true }) : await query;
@@ -373,7 +391,17 @@ async function loadFromSupabase() {
     try {
         const settingsRow = await maybeSingleRemote(client, SUPABASE_TABLES.settings, "year, active_graph_id, cell_height", config.appKey);
         const graphRows = await selectRemoteRows(client, SUPABASE_TABLES.graphs, "id, name, type, first_shift_date, sort_order", config.appKey, "sort_order");
-        const shiftRows = await selectRemoteRows(client, SUPABASE_TABLES.shifts, "id, graph_id, name, sort_order", config.appKey, "sort_order");
+        let shiftRows = [];
+        try {
+            shiftRows = await selectRemoteRows(client, SUPABASE_TABLES.shifts, "id, graph_id, name, shift_type, sort_order", config.appKey, "sort_order");
+            remoteCapabilities.shiftType = true;
+        } catch (error) {
+            if (!isMissingColumnError(error, "shift_type")) {
+                throw error;
+            }
+            remoteCapabilities.shiftType = false;
+            shiftRows = await selectRemoteRows(client, SUPABASE_TABLES.shifts, "id, graph_id, name, sort_order", config.appKey, "sort_order");
+        }
         const absenceRows = await selectRemoteRows(client, SUPABASE_TABLES.absences, "id, graph_id, shift_id, absence_type, start_date, end_date", config.appKey, "start_date");
         const overrideRows = await selectRemoteRows(client, SUPABASE_TABLES.overrides, "id, graph_id, shift_id, work_date, mode, hours, night, absence_type", config.appKey, "work_date");
 
@@ -391,7 +419,8 @@ async function loadFromSupabase() {
                 .filter(shiftRow => toId(shiftRow.graph_id) === toId(graphRow.id))
                 .map((shiftRow, shiftIndex) => ({
                     id: toId(shiftRow.id),
-                    name: normalizeShiftName(shiftRow.name, shiftIndex)
+                    name: normalizeShiftName(shiftRow.name, shiftIndex),
+                    shiftKind: normalizeShiftKind(shiftRow.shift_type)
                 }))
         }));
 
@@ -497,6 +526,7 @@ async function syncStateToSupabase() {
         app_key: config.appKey,
         graph_id: graph.id,
         name: normalizeShiftName(smena.name, shiftIndex),
+        shift_type: normalizeShiftKind(smena.shiftKind),
         sort_order: shiftIndex,
         updated_at: now
     })));
@@ -538,7 +568,21 @@ async function syncStateToSupabase() {
         await upsertMaybe(client, SUPABASE_TABLES.graphs, graphRows, "id");
         await deleteMissingRows(client, SUPABASE_TABLES.graphs, config.appKey, graphRows.map(row => row.id));
 
-        await upsertMaybe(client, SUPABASE_TABLES.shifts, shiftRows, "id");
+        if (remoteCapabilities.shiftType) {
+            try {
+                await upsertMaybe(client, SUPABASE_TABLES.shifts, shiftRows, "id");
+            } catch (error) {
+                if (!isMissingColumnError(error, "shift_type")) {
+                    throw error;
+                }
+                remoteCapabilities.shiftType = false;
+                const fallbackShiftRows = shiftRows.map(({ shift_type, ...row }) => row);
+                await upsertMaybe(client, SUPABASE_TABLES.shifts, fallbackShiftRows, "id");
+            }
+        } else {
+            const fallbackShiftRows = shiftRows.map(({ shift_type, ...row }) => row);
+            await upsertMaybe(client, SUPABASE_TABLES.shifts, fallbackShiftRows, "id");
+        }
         await deleteMissingRows(client, SUPABASE_TABLES.shifts, config.appKey, shiftRows.map(row => row.id));
 
         await upsertMaybe(client, SUPABASE_TABLES.absences, absenceRows, "id");
@@ -602,7 +646,17 @@ function getShiftPhaseOffset(smenaIndex) {
     return alignedOffsets[smenaIndex] ?? mod(smenaIndex, 4);
 }
 
-function getCellSchedule(graph, smenaIndex, dateStr) {
+function getCellSchedule(graph, smena, smenaIndex, dateStr) {
+    if (normalizeShiftKind(smena?.shiftKind) === "reserve") {
+        const parts = parseIsoDateParts(dateStr);
+        const weekend = [0, 6].includes(getWeekday(parts.year, parts.month - 1, parts.day));
+        const holiday = isHoliday(dateStr);
+        if (weekend || holiday) {
+            return { hours: 0, night: 0, worked: false };
+        }
+        return { hours: 8, night: 0, worked: true };
+    }
+
     const pattern = getPattern(graph.type);
     const startDay = toUtcDayNumber(graph.firstShiftDate);
     const currentDay = toUtcDayNumber(dateStr);
@@ -636,6 +690,8 @@ function getOverrideAppliedState(override, fallbackSchedule) {
             return { hours: 8, night: 6, worked: true, code: "", absence: null, manualClass: "manual-work-cell" };
         case "work12":
             return { hours: 12, night: 0, worked: true, code: "", absence: null, manualClass: "manual-work-cell" };
+        case "work8day":
+            return { hours: 8, night: 0, worked: true, code: "", absence: null, manualClass: "manual-work-cell" };
         case "custom":
             return {
                 hours: clamp(parseInt(override.hours, 10) || 0, 0, 24),
@@ -703,7 +759,7 @@ function buildMonthRowData(graph, smena, smenaIndex, monthIndex) {
         const dateStr = buildIsoDate(currentYear, monthIndex, day);
         const weekend = [0, 6].includes(getWeekday(currentYear, monthIndex, day));
         const holiday = isHoliday(dateStr);
-        const schedule = getCellSchedule(graph, smenaIndex, dateStr);
+        const schedule = getCellSchedule(graph, smena, smenaIndex, dateStr);
         const rangeAbsence = findAbsence(graph.id, smena.id, dateStr);
         const override = findOverride(graph.id, smena.id, dateStr);
 
@@ -752,7 +808,8 @@ function buildMonthRowData(graph, smena, smenaIndex, monthIndex) {
             smenaName: smena.name,
             override,
             manualClass,
-            isManual: Boolean(override)
+            isManual: Boolean(override),
+            shiftKind: normalizeShiftKind(smena.shiftKind)
         });
     }
 
@@ -836,16 +893,29 @@ function renderSmeny() {
     }
 
     container.innerHTML = graph.smeny.map((smena, index) => `
-        <div class="employee-item employee-item-editable">
+        <div class="employee-item employee-item-editable ${normalizeShiftKind(smena.shiftKind) === "reserve" ? "employee-item-reserve" : ""}">
             <div class="employee-badge">${index + 1}</div>
-            <input
-                type="text"
-                class="form-control form-control-sm ${isReadOnlyMode ? "readonly-input" : ""}"
-                value="${escapeHtml(smena.name)}"
-                onchange="renameSmena('${escapeHtml(smena.id)}', this.value)"
-                onblur="renameSmena('${escapeHtml(smena.id)}', this.value)"
-                ${isReadOnlyMode ? "disabled" : ""}
-            >
+            <div class="employee-main-fields">
+                <input
+                    type="text"
+                    class="form-control form-control-sm ${isReadOnlyMode ? "readonly-input" : ""}"
+                    value="${escapeHtml(smena.name)}"
+                    onchange="renameSmena('${escapeHtml(smena.id)}', this.value)"
+                    onblur="renameSmena('${escapeHtml(smena.id)}', this.value)"
+                    ${isReadOnlyMode ? "disabled" : ""}
+                >
+                <div class="employee-kind-row">
+                    <select
+                        class="form-select form-select-sm shift-kind-select ${isReadOnlyMode ? "readonly-input" : ""}"
+                        onchange="updateShiftKind('${escapeHtml(smena.id)}', this.value)"
+                        ${isReadOnlyMode ? "disabled" : ""}
+                    >
+                        <option value="regular" ${normalizeShiftKind(smena.shiftKind) === "regular" ? "selected" : ""}>Основная</option>
+                        <option value="reserve" ${normalizeShiftKind(smena.shiftKind) === "reserve" ? "selected" : ""}>Подменная</option>
+                    </select>
+                    <span class="shift-kind-badge ${normalizeShiftKind(smena.shiftKind) === "reserve" ? "reserve" : "regular"}">${getShiftKindLabel(smena.shiftKind)}</span>
+                </div>
+            </div>
             ${isReadOnlyMode ? "" : `
             <button onclick="deleteSmena(event, '${escapeHtml(smena.id)}')" class="btn btn-sm text-danger" title="Удалить смену">
                 <i class="bi bi-trash"></i>
@@ -1049,8 +1119,8 @@ function renderDayCell(cell) {
     else if (cell.weekend) tooltipParts.push("Выходной день календаря");
 
     const topValue = cell.absence ? cell.code : (cell.hours || "");
-    const bottomValue = cell.absence ? (cell.isManual ? "ручн." : "") : (cell.night || "");
-    const tag = cell.isManual ? '<span class="cell-tag">ручн.</span>' : '';
+    const bottomValue = cell.absence ? "" : (cell.night || "");
+    const tag = "";
     const action = !isReadOnlyMode
         ? `onclick="openCellEditModal('${escapeHtml(cell.graphId)}','${escapeHtml(cell.smenaId)}','${escapeHtml(cell.dateStr)}')"`
         : "";
@@ -1181,7 +1251,18 @@ function addSmena() {
     if (isReadOnlyMode) return;
     const graph = getActiveGraph();
     if (!graph) return;
-    graph.smeny.push({ id: uid("shift"), name: `Смена ${graph.smeny.length + 1}` });
+    graph.smeny.push({ id: uid("shift"), name: `Смена ${graph.smeny.length + 1}`, shiftKind: "regular" });
+    save();
+    renderAll();
+}
+
+function updateShiftKind(smenaId, value) {
+    if (isReadOnlyMode) return;
+    const graph = getActiveGraph();
+    if (!graph) return;
+    const smena = graph.smeny.find(item => item.id === toId(smenaId));
+    if (!smena) return;
+    smena.shiftKind = normalizeShiftKind(value);
     save();
     renderAll();
 }
@@ -1515,7 +1596,7 @@ function styleExcelCell(cell, options = {}) {
 
 function getExportDayCellAppearance(cell) {
     if (cell.kind === "empty") {
-        return { topValue: "", bottomValue: "", fill: "FFFFFFFF" };
+        return { topValue: "", bottomValue: "", fill: "FFF2F2F2" };
     }
 
     if (cell.absence) {
@@ -1525,17 +1606,29 @@ function getExportDayCellAppearance(cell) {
         if (cell.absence.type === "Больничный") {
             return { topValue: cell.code || getAbsenceCode(cell.absence.type), bottomValue: "", fill: "FFF8DDCA" };
         }
-        return { topValue: cell.code || getAbsenceCode(cell.absence.type), bottomValue: "", fill: "FFD7EAF8" };
+        return { topValue: cell.code || getAbsenceCode(cell.absence.type), bottomValue: "", fill: "FF00B0F0" };
     }
 
-    if (!cell.worked) {
-        return { topValue: "", bottomValue: "", fill: "FFFFC1FF" };
+    if (cell.shiftKind === "reserve" && !cell.holiday && !cell.weekend) {
+        return {
+            topValue: cell.worked ? (cell.hours || "") : "",
+            bottomValue: cell.worked ? (cell.night || "") : "",
+            fill: "FFFFFF00"
+        };
+    }
+
+    if (cell.weekend) {
+        return {
+            topValue: cell.worked ? (cell.hours || "") : "",
+            bottomValue: cell.worked ? (cell.night || "") : "",
+            fill: "FFFDBEB9"
+        };
     }
 
     return {
-        topValue: cell.hours || "",
-        bottomValue: cell.night || "",
-        fill: cell.isManual ? "FFE3F5E1" : "FFFFC1FF"
+        topValue: cell.worked ? (cell.hours || "") : "",
+        bottomValue: cell.worked ? (cell.night || "") : "",
+        fill: "FFFFC1FF"
     };
 }
 
