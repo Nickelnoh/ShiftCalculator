@@ -146,6 +146,22 @@ function isHoliday(dateStr) {
     return HOLIDAYS_BY_YEAR[year]?.has(dateStr) || false;
 }
 
+function isPreholiday(dateStr) {
+    const dayNumber = toUtcDayNumber(dateStr);
+    if (dayNumber === null) return false;
+    const nextDateStr = toIsoFromUtcDayNumber(dayNumber + 1);
+    if (!nextDateStr) return false;
+    const parts = parseIsoDateParts(dateStr);
+    if (!parts) return false;
+    const weekday = getWeekday(parts.year, parts.month - 1, parts.day);
+    return !isHoliday(dateStr) && ![0, 6].includes(weekday) && isHoliday(nextDateStr);
+}
+
+function toIsoFromUtcDayNumber(dayNumber) {
+    const date = new Date(dayNumber * MS_IN_DAY);
+    return buildIsoDate(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+}
+
 function normalizeShiftName(value, fallbackIndex = 0) {
     const raw = String(value ?? "").trim();
     if (!raw) {
@@ -786,6 +802,7 @@ function buildMonthRowData(graph, smena, smenaIndex, monthIndex) {
         const dateStr = buildIsoDate(currentYear, monthIndex, day);
         const weekend = [0, 6].includes(getWeekday(currentYear, monthIndex, day));
         const holiday = isHoliday(dateStr);
+        const preholiday = isPreholiday(dateStr);
         const schedule = getCellSchedule(graph, smena, smenaIndex, dateStr);
         const rangeAbsence = findAbsence(graph.id, smena.id, dateStr);
         const override = findOverride(graph.id, smena.id, dateStr);
@@ -825,6 +842,7 @@ function buildMonthRowData(graph, smena, smenaIndex, monthIndex) {
             dateStr,
             weekend,
             holiday,
+            preholiday,
             absence,
             hours,
             night,
@@ -1672,20 +1690,20 @@ function styleExcelCell(cell, options = {}) {
 
 function getExportDayCellAppearance(cell) {
     if (cell.kind === "empty") {
-        return { topValue: "", bottomValue: "", fill: "FFF2F2F2" };
+        return { topValue: "", bottomValue: "", fill: "FFFFFFFF" };
     }
 
     if (cell.absence) {
         if (cell.absence.type === "Отгул") {
-            return { topValue: cell.code || getAbsenceCode(cell.absence.type), bottomValue: "", fill: "FFD7F4E4" };
+            return { topValue: cell.code || getAbsenceCode(cell.absence.type), bottomValue: "", fill: "FFDCEEFF" };
         }
         if (cell.absence.type === "Срочный больничный") {
-            return { topValue: cell.code || getAbsenceCode(cell.absence.type), bottomValue: "", fill: "FFF5D4E7" };
+            return { topValue: cell.code || getAbsenceCode(cell.absence.type), bottomValue: "", fill: "FFFFF2A8" };
         }
         if (cell.absence.type === "Больничный") {
-            return { topValue: cell.code || getAbsenceCode(cell.absence.type), bottomValue: "", fill: "FFF8DDCA" };
+            return { topValue: cell.code || getAbsenceCode(cell.absence.type), bottomValue: "", fill: "FFFFF2A8" };
         }
-        return { topValue: cell.code || getAbsenceCode(cell.absence.type), bottomValue: "", fill: "FFD9EEF9" };
+        return { topValue: cell.code || getAbsenceCode(cell.absence.type), bottomValue: "", fill: "FF8EC9FF" };
     }
 
     if (cell.worked) {
@@ -1697,11 +1715,15 @@ function getExportDayCellAppearance(cell) {
     }
 
     if (cell.holiday) {
-        return { topValue: "", bottomValue: "", fill: "FFF0DDDD" };
+        return { topValue: "", bottomValue: "", fill: "FFF7D9E6" };
+    }
+
+    if (cell.preholiday) {
+        return { topValue: "", bottomValue: "", fill: "FFFFF5CC" };
     }
 
     if (cell.weekend) {
-        return { topValue: "", bottomValue: "", fill: "FFF5D5D5" };
+        return { topValue: "", bottomValue: "", fill: "FFF9DADA" };
     }
 
     return {
