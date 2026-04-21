@@ -12,6 +12,10 @@ const HOLIDAYS_BY_YEAR = {
     ])
 };
 
+const ANNUAL_NORM_HOURS_BY_YEAR = {
+    2026: 1972
+};
+
 const STORAGE_KEYS = {
     year: "ssc_year",
     graphs: "ssc_graphs",
@@ -59,6 +63,7 @@ let isReadOnlyMode = false;
 let readOnlyGraphId = "";
 let pendingCreatedGraphId = "";
 let editingCellContext = null;
+let currentAbsenceCategory = "planned";
 
 function uid(prefix = "id") {
     return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
@@ -203,7 +208,26 @@ function normalizeGraph(graph, index) {
 function normalizeAbsenceType(type) {
     if (type === "Срочный больничный") return "Срочный больничный";
     if (type === "Больничный") return "Больничный";
+    if (type === "Отгул") return "Отгул";
     return "Отпуск";
+}
+
+function isShortAbsenceType(type) {
+    return normalizeAbsenceType(type) === "Срочный больничный" || normalizeAbsenceType(type) === "Отгул";
+}
+
+function getAbsenceVisualMeta(type) {
+    const normalized = normalizeAbsenceType(type);
+    if (normalized === "Отпуск") {
+        return { className: "absence-otpusk", cellClass: "absence-vacation-cell", icon: "🏖️" };
+    }
+    if (normalized === "Отгул") {
+        return { className: "absence-otgul", cellClass: "absence-dayoff-cell", icon: "🟢" };
+    }
+    if (normalized === "Срочный больничный") {
+        return { className: "absence-srochny", cellClass: "absence-urgent-cell", icon: "🚑" };
+    }
+    return { className: "absence-bolnichny", cellClass: "absence-sick-cell", icon: "🏥" };
 }
 
 function normalizeAbsence(absence) {
@@ -676,6 +700,7 @@ function findOverride(graphId, smenaId, dateStr) {
 function getAbsenceCode(type) {
     if (type === "Срочный больничный") return "СБ";
     if (type === "Больничный") return "БЛ";
+    if (type === "Отгул") return "ОГ";
     return "ОТ";
 }
 
@@ -707,6 +732,8 @@ function getOverrideAppliedState(override, fallbackSchedule) {
             return { hours: 0, night: 0, worked: false, code: "БЛ", absence: { type: "Больничный" }, manualClass: "" };
         case "urgent_sick":
             return { hours: 0, night: 0, worked: false, code: "СБ", absence: { type: "Срочный больничный" }, manualClass: "" };
+        case "dayoff":
+            return { hours: 0, night: 0, worked: false, code: "ОГ", absence: { type: "Отгул" }, manualClass: "" };
         default:
             return {
                 hours: fallbackSchedule.hours,
@@ -834,18 +861,46 @@ function getAnnualProductionStats() {
     return totals;
 }
 
+function getAnnualNormHours(year = currentYear) {
+    return ANNUAL_NORM_HOURS_BY_YEAR[year] || getAnnualProductionStats().workHours;
+}
+
 function buildAnnualStats(graph) {
-    const productionTotals = getAnnualProductionStats();
+    const baseNormHours = getAnnualNormHours(currentYear);
     return graph.smeny.map((smena, smenaIndex) => {
-        const stats = { workedDays: 0, hours: 0, night: 0 };
+        const stats = {
+            workedDays: 0,
+            hours: 0,
+            night: 0,
+            absenceWorkingDays: 0,
+            absenceHours: 0,
+            plannedAbsenceDays: 0,
+            shortAbsenceDays: 0
+        };
+
         for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
             const rowData = buildMonthRowData(graph, smena, smenaIndex, monthIndex);
             stats.workedDays += rowData.rowStats.workedDays;
             stats.hours += rowData.rowStats.hours;
             stats.night += rowData.rowStats.night;
+
+            rowData.cells.forEach((cell) => {
+                if (cell.kind !== "day" || !cell.absence || cell.weekend || cell.holiday) {
+                    return;
+                }
+                stats.absenceWorkingDays += 1;
+                stats.absenceHours += 8;
+                if (isShortAbsenceType(cell.absence.type)) {
+                    stats.shortAbsenceDays += 1;
+                } else {
+                    stats.plannedAbsenceDays += 1;
+                }
+            });
         }
-        const diffHours = stats.hours - productionTotals.workHours;
-        return { smena, diffHours, normHours: productionTotals.workHours, ...stats };
+
+        const normHours = Math.max(0, baseNormHours - stats.absenceHours);
+        const diffHours = stats.hours - normHours;
+        return { smena, diffHours, normHours, baseNormHours, ...stats };
     });
 }
 
@@ -926,33 +981,43 @@ function renderSmeny() {
 
 function renderAbsences() {
     const graph = getActiveGraph();
-    const container = document.getElementById("absencesList");
+    const plannedContainer = document.getElementById("plannedAbsencesList");
+    const shortContainer = document.getElementById("shortAbsencesList");
     if (!graph) {
-        container.innerHTML = "";
+        if (plannedContainer) plannedContainer.innerHTML = "";
+        if (shortContainer) shortContainer.innerHTML = "";
         return;
     }
 
     const list = absences.filter(item => item.graphId === graph.id);
-    if (!list.length) {
-        container.innerHTML = '<div class="empty-note">Отвлечения не добавлены.</div>';
-        return;
-    }
+    const planned = list.filter(item => !isShortAbsenceType(item.type));
+    const short = list.filter(item => isShortAbsenceType(item.type));
 
-    container.innerHTML = list.map((absence) => {
-        const smena = graph.smeny.find(item => item.id === absence.smenaId);
-        const isVacation = absence.type === "Отпуск";
-        const isUrgent = absence.type === "Срочный больничный";
-        const className = isVacation ? "absence-otpusk" : (isUrgent ? "absence-srochny" : "absence-bolnichny");
-        const icon = isVacation ? "🏖️" : (isUrgent ? "🚑" : "🏥");
-        return `
-            <div class="employee-item small ${className}">
-                <div><b>${icon} ${escapeHtml(absence.type)}</b></div>
-                <div>${escapeHtml(smena?.name || "Удаленная смена")}</div>
-                <div>${escapeHtml(absence.start)} — ${escapeHtml(absence.end)}</div>
-                ${isReadOnlyMode ? "" : `<button onclick="deleteAbsence(event, '${escapeHtml(absence.id)}')" class="btn btn-sm btn-link text-danger p-0 mt-1">Удалить</button>`}
-            </div>
-        `;
-    }).join("");
+    const renderAbsenceItems = (items, emptyText) => {
+        if (!items.length) {
+            return `<div class="empty-note">${emptyText}</div>`;
+        }
+
+        return items.map((absence) => {
+            const smena = graph.smeny.find(item => item.id === absence.smenaId);
+            const meta = getAbsenceVisualMeta(absence.type);
+            return `
+                <div class="employee-item small ${meta.className}">
+                    <div><b>${meta.icon} ${escapeHtml(absence.type)}</b></div>
+                    <div>${escapeHtml(smena?.name || "Удаленная смена")}</div>
+                    <div>${escapeHtml(absence.start)} — ${escapeHtml(absence.end)}</div>
+                    ${isReadOnlyMode ? "" : `<button onclick="deleteAbsence(event, '${escapeHtml(absence.id)}')" class="btn btn-sm btn-link text-danger p-0 mt-1">Удалить</button>`}
+                </div>
+            `;
+        }).join("");
+    };
+
+    if (plannedContainer) {
+        plannedContainer.innerHTML = renderAbsenceItems(planned, "Отвлечения не добавлены.");
+    }
+    if (shortContainer) {
+        shortContainer.innerHTML = renderAbsenceItems(short, "Кратковременные отвлечения не добавлены.");
+    }
 }
 
 function renderActiveGraphInfo(graph) {
@@ -1009,6 +1074,9 @@ function renderAnnualSummary(graph) {
                 </div>
                 <div class="summary-card-extra">
                     <span class="summary-pill norm"><i class="bi bi-clock"></i>Норма: ${item.normHours} ч</span>
+                    <span class="summary-pill norm"><i class="bi bi-calendar-x"></i>Отвлечения: ${item.absenceHours} ч</span>
+                    ${item.plannedAbsenceDays ? `<span class="summary-pill norm"><i class="bi bi-suitcase"></i>Плановые: ${item.plannedAbsenceDays} дн.</span>` : ""}
+                    ${item.shortAbsenceDays ? `<span class="summary-pill norm"><i class="bi bi-lightning-charge"></i>Краткосрочные: ${item.shortAbsenceDays} дн.</span>` : ""}
                     ${diffLabel}
                 </div>
             </div>
@@ -1097,16 +1165,14 @@ function renderDayCell(cell) {
     if (cell.manualClass) classes.push(cell.manualClass);
 
     if (cell.absence) {
-        const absenceClass = cell.absence.type === "Срочный больничный"
-            ? "absence-urgent-cell"
-            : cell.absence.type === "Больничный" ? "absence-sick-cell" : "absence-vacation-cell";
+        const absenceClass = getAbsenceVisualMeta(cell.absence.type).cellClass;
         classes.push("is-absence", absenceClass);
+    } else if (cell.worked) {
+        classes.push("is-worked");
     } else if (cell.holiday) {
         classes.push("is-holiday");
     } else if (cell.weekend) {
         classes.push("is-weekend");
-    } else if (cell.worked) {
-        classes.push("is-worked");
     } else {
         classes.push("is-off");
     }
@@ -1298,21 +1364,30 @@ function deleteSmena(event, smenaId) {
     renderAll();
 }
 
-function addAbsenceModal() {
-    if (isReadOnlyMode) return;
+function addAbsenceModal(category = "planned") {
     const graph = getActiveGraph();
     if (!graph || !graph.smeny.length) {
         alert("Сначала добавьте хотя бы одну смену.");
         return;
     }
 
+    currentAbsenceCategory = category === "short" ? "short" : "planned";
+
     document.getElementById("modalSmena").innerHTML = graph.smeny
         .map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`)
         .join("");
 
+    const typeSelect = document.getElementById("modalType");
+    const titleNode = document.getElementById("absenceModalTitle");
+    const options = currentAbsenceCategory === "short"
+        ? ["Срочный больничный", "Отгул"]
+        : ["Отпуск", "Больничный"];
+
+    typeSelect.innerHTML = options.map((type) => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join("");
+    titleNode.textContent = currentAbsenceCategory === "short" ? "Добавить кратковременное отвлечение" : "Добавить отвлечение";
+
     document.getElementById("modalStart").value = "";
     document.getElementById("modalEnd").value = "";
-    document.getElementById("modalType").value = "Отпуск";
     new bootstrap.Modal(document.getElementById("absenceModal")).show();
 }
 
@@ -1464,6 +1539,7 @@ function saveCellOverride() {
     if (mode === "vacation") override.absenceType = "Отпуск";
     if (mode === "sick") override.absenceType = "Больничный";
     if (mode === "urgent_sick") override.absenceType = "Срочный больничный";
+    if (mode === "dayoff") override.absenceType = "Отгул";
 
     const existing = findOverride(editingCellContext.graphId, editingCellContext.smenaId, editingCellContext.date);
     if (existing) override.id = existing.id;
@@ -1600,35 +1676,38 @@ function getExportDayCellAppearance(cell) {
     }
 
     if (cell.absence) {
+        if (cell.absence.type === "Отгул") {
+            return { topValue: cell.code || getAbsenceCode(cell.absence.type), bottomValue: "", fill: "FFD7F4E4" };
+        }
         if (cell.absence.type === "Срочный больничный") {
             return { topValue: cell.code || getAbsenceCode(cell.absence.type), bottomValue: "", fill: "FFF5D4E7" };
         }
         if (cell.absence.type === "Больничный") {
             return { topValue: cell.code || getAbsenceCode(cell.absence.type), bottomValue: "", fill: "FFF8DDCA" };
         }
-        return { topValue: cell.code || getAbsenceCode(cell.absence.type), bottomValue: "", fill: "FF00B0F0" };
+        return { topValue: cell.code || getAbsenceCode(cell.absence.type), bottomValue: "", fill: "FFD9EEF9" };
     }
 
-    if (cell.shiftKind === "reserve" && !cell.holiday && !cell.weekend) {
+    if (cell.worked) {
         return {
-            topValue: cell.worked ? (cell.hours || "") : "",
-            bottomValue: cell.worked ? (cell.night || "") : "",
-            fill: "FFFFFF00"
+            topValue: cell.hours || "",
+            bottomValue: cell.night || "",
+            fill: "FFFFFFFF"
         };
+    }
+
+    if (cell.holiday) {
+        return { topValue: "", bottomValue: "", fill: "FFF0DDDD" };
     }
 
     if (cell.weekend) {
-        return {
-            topValue: cell.worked ? (cell.hours || "") : "",
-            bottomValue: cell.worked ? (cell.night || "") : "",
-            fill: "FFFDBEB9"
-        };
+        return { topValue: "", bottomValue: "", fill: "FFF5D5D5" };
     }
 
     return {
-        topValue: cell.worked ? (cell.hours || "") : "",
-        bottomValue: cell.worked ? (cell.night || "") : "",
-        fill: "FFFFC1FF"
+        topValue: "",
+        bottomValue: "",
+        fill: "FFFFFFFF"
     };
 }
 
@@ -1712,7 +1791,7 @@ async function exportActiveGraphToExcel() {
     worksheet.getCell(`${getExcelColumnName(graphDaysCol)}9`).value = "По графику";
     worksheet.getCell(`${getExcelColumnName(prodDaysCol)}9`).value = "По произ. кален.";
     worksheet.getCell(`${getExcelColumnName(corrHoursCol)}9`).value = "Корректировка (час)";
-    worksheet.getCell(`${getExcelColumnName(absenceDaysCol)}9`).value = "Дней отпуска, БС из рабочих";
+    worksheet.getCell(`${getExcelColumnName(absenceDaysCol)}9`).value = "Дней отвлечений из рабочих";
 
     for (let day = 1; day <= 31; day += 1) {
         worksheet.getCell(11, dayStartCol + day - 1).value = day;
