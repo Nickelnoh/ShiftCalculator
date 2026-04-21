@@ -6,14 +6,15 @@
     --text-main: #222;
     --text-muted: #6b7280;
     --base-cell-bg: #ffffff;
-    --weekend-bg: #dff1ff;
-    --holiday-bg: #fff2b8;
-    --vacation-bg: #00b0f0;
-    --sick-bg: #f8ddca;
-    --urgent-sick-bg: #f5d4e7;
+    --weekend-bg: #f9dada;
+    --holiday-bg: #f7d9e6;
+    --preholiday-bg: #fff5cc;
+    --vacation-bg: #8ec9ff;
+    --sick-bg: #fff2a8;
+    --urgent-sick-bg: #fff2a8;
     --manual-bg: #ffffff;
     --off-bg: #ffffff;
-    --dayoff-bg: #d7f4e4;
+    --dayoff-bg: #dceeff;
     --app-bg: #eef2f7;
     --surface: #ffffff;
     --radius-lg: 18px;
@@ -293,24 +294,24 @@ body.sidebar-open {
 }
 
 .absence-otpusk {
-    background: #f5fbff;
-    border-color: #b7daf6;
+    background: #eef7ff;
+    border-color: #8ec9ff;
 }
 
 .absence-otgul {
-    background: #eefcf4;
-    border-color: #b8e7cb;
+    background: #f2f8ff;
+    border-color: #dceeff;
 }
 
 .absence-bolnichny,
 .absence-srochny {
-    background: #fff7f0;
-    border-color: #f0c4a1;
+    background: #fff9d9;
+    border-color: #fff2a8;
 }
 
 .absence-srochny {
-    background: #fff4fb;
-    border-color: #efbce0;
+    background: #fff9d9;
+    border-color: #fff2a8;
 }
 
 .summary-grid {
@@ -413,6 +414,7 @@ body.sidebar-open {
 .legend-dayoff { background: #d7f4e4; }
 .legend-weekend { background: var(--weekend-bg); }
 .legend-holiday { background: var(--holiday-bg); }
+.legend-preholiday { background: var(--preholiday-bg); }
 .legend-vacation { background: var(--vacation-bg); }
 .legend-sick { background: var(--sick-bg); }
 
@@ -564,7 +566,6 @@ body.sidebar-open {
 
 .is-worked {
     --cell-fill: #ffffff;
-    background: #ffffff !important;
 }
 
 .is-off {
@@ -577,6 +578,10 @@ body.sidebar-open {
 
 .is-holiday {
     --cell-fill: var(--holiday-bg);
+}
+
+.is-preholiday {
+    --cell-fill: var(--preholiday-bg);
 }
 
 .is-absence {
@@ -594,22 +599,21 @@ body.sidebar-open {
 
 .absence-sick-cell {
     --cell-fill: var(--sick-bg);
-    color: #8a3b00;
+    color: #7a5a00;
 }
 
 .absence-dayoff-cell {
     --cell-fill: var(--dayoff-bg);
-    color: #0d5f37;
+    color: #295a8f;
 }
 
 .absence-urgent-cell {
     --cell-fill: var(--urgent-sick-bg);
-    color: #8b165b;
+    color: #7a5a00;
 }
 
 .manual-work-cell {
     --cell-fill: #ffffff;
-    background: #ffffff !important;
 }
 
 .stat-col,
@@ -948,13 +952,4 @@ body.read-only-mode .schedule-table {
 
 body.read-only-mode .schedule-table thead th {
     top: 0;
-}
-
-.is-worked .cell-lines,
-.is-worked .cell-top,
-.is-worked .cell-bottom,
-.manual-work-cell .cell-lines,
-.manual-work-cell .cell-top,
-.manual-work-cell .cell-bottom {
-    background: #ffffff !important;
 }
