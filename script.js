@@ -1172,7 +1172,7 @@ function renderDayCell(cell) {
     if (cell.kind === "empty") {
         return `
             <td class="day-cell day-cell-empty">
-                <div class="cell-lines cell-lines-empty"><span>×</span></div>
+                <div class="cell-lines cell-lines-empty"><span></span></div>
             </td>
         `;
     }
@@ -1185,14 +1185,20 @@ function renderDayCell(cell) {
     if (cell.absence) {
         const absenceClass = getAbsenceVisualMeta(cell.absence.type).cellClass;
         classes.push("is-absence", absenceClass);
-    } else if (cell.worked) {
-        classes.push("is-worked");
-    } else if (cell.holiday) {
-        classes.push("is-holiday");
-    } else if (cell.weekend) {
-        classes.push("is-weekend");
     } else {
-        classes.push("is-off");
+        if (cell.worked) {
+            classes.push("is-worked");
+        } else {
+            classes.push("is-off");
+        }
+
+        if (cell.holiday) {
+            classes.push("is-holiday");
+        } else if (cell.preholiday) {
+            classes.push("is-preholiday");
+        } else if (cell.weekend) {
+            classes.push("is-weekend");
+        }
     }
 
     const tooltipParts = [cell.dateStr];
@@ -1706,24 +1712,27 @@ function getExportDayCellAppearance(cell) {
         return { topValue: cell.code || getAbsenceCode(cell.absence.type), bottomValue: "", fill: "FF8EC9FF" };
     }
 
-    if (cell.worked) {
-        return {
-            topValue: cell.hours || "",
-            bottomValue: cell.night || "",
-            fill: "FFFFFFFF"
-        };
-    }
+    const topValue = cell.worked ? (cell.hours || "") : "";
+    const bottomValue = cell.worked ? (cell.night || "") : "";
 
     if (cell.holiday) {
-        return { topValue: "", bottomValue: "", fill: "FFF7D9E6" };
+        return { topValue, bottomValue, fill: "FFF7D9E6" };
     }
 
     if (cell.preholiday) {
-        return { topValue: "", bottomValue: "", fill: "FFFFF5CC" };
+        return { topValue, bottomValue, fill: "FFFFF5CC" };
     }
 
     if (cell.weekend) {
-        return { topValue: "", bottomValue: "", fill: "FFF9DADA" };
+        return { topValue, bottomValue, fill: "FFF9DADA" };
+    }
+
+    if (cell.worked) {
+        return {
+            topValue,
+            bottomValue,
+            fill: "FFFFFFFF"
+        };
     }
 
     return {
@@ -1919,17 +1928,15 @@ async function exportActiveGraphToExcel() {
                 cell.kind === "day" && cell.absence && !cell.weekend && !cell.holiday
             ).length;
 
-            const graphDaysValue = rowData.rowStats.workedDays;
-            const graphHoursValue = rowData.rowStats.hours;
-            const prodDaysValue = rowData.productionStats.workDays;
-            const corrHoursValue = absenceWorkingDays * 8;
-            const prodHoursValue = Math.max(0, rowData.productionStats.workHours - corrHoursValue);
-
-            worksheet.getCell(topRow, graphDaysCol).value = graphDaysValue;
-            worksheet.getCell(topRow, graphHoursCol).value = graphHoursValue;
-            worksheet.getCell(topRow, prodDaysCol).value = prodDaysValue;
-            worksheet.getCell(topRow, prodHoursCol).value = prodHoursValue;
-            worksheet.getCell(topRow, corrHoursCol).value = corrHoursValue;
+            worksheet.getCell(topRow, graphDaysCol).value = { formula: `COUNT(C${topRow}:AG${topRow})` };
+            worksheet.getCell(topRow, graphHoursCol).value = { formula: `SUM(C${topRow}:AG${topRow})` };
+            worksheet.getCell(topRow, prodDaysCol).value = rowData.productionStats.workDays;
+            worksheet.getCell(topRow, prodHoursCol).value = {
+                formula: `${rowData.productionStats.workHours}-${getExcelColumnName(corrHoursCol)}${topRow}`
+            };
+            worksheet.getCell(topRow, corrHoursCol).value = {
+                formula: `${getExcelColumnName(absenceDaysCol)}${topRow}*8`
+            };
             worksheet.getCell(topRow, absenceDaysCol).value = absenceWorkingDays;
 
             for (const col of [graphDaysCol, graphHoursCol, prodDaysCol, prodHoursCol, corrHoursCol, absenceDaysCol]) {
