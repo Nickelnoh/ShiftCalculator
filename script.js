@@ -1927,16 +1927,14 @@ async function exportActiveGraphToExcel() {
             const absenceWorkingDays = rowData.cells.filter((cell) =>
                 cell.kind === "day" && cell.absence && !cell.weekend && !cell.holiday
             ).length;
+            const correctionHours = absenceWorkingDays * 8;
+            const correctedProductionHours = Math.max(0, rowData.productionStats.workHours - correctionHours);
 
-            worksheet.getCell(topRow, graphDaysCol).value = { formula: `COUNT(C${topRow}:AG${topRow})` };
-            worksheet.getCell(topRow, graphHoursCol).value = { formula: `SUM(C${topRow}:AG${topRow})` };
+            worksheet.getCell(topRow, graphDaysCol).value = rowData.rowStats.workedDays;
+            worksheet.getCell(topRow, graphHoursCol).value = rowData.rowStats.hours;
             worksheet.getCell(topRow, prodDaysCol).value = rowData.productionStats.workDays;
-            worksheet.getCell(topRow, prodHoursCol).value = {
-                formula: `${rowData.productionStats.workHours}-${getExcelColumnName(corrHoursCol)}${topRow}`
-            };
-            worksheet.getCell(topRow, corrHoursCol).value = {
-                formula: `${getExcelColumnName(absenceDaysCol)}${topRow}*8`
-            };
+            worksheet.getCell(topRow, prodHoursCol).value = correctedProductionHours;
+            worksheet.getCell(topRow, corrHoursCol).value = correctionHours;
             worksheet.getCell(topRow, absenceDaysCol).value = absenceWorkingDays;
 
             for (const col of [graphDaysCol, graphHoursCol, prodDaysCol, prodHoursCol, corrHoursCol, absenceDaysCol]) {
