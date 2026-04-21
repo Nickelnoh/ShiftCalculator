@@ -5,14 +5,15 @@
     --line-strong: #b8c0cc;
     --text-main: #222;
     --text-muted: #6b7280;
-    --base-cell-bg: #ffc1ff;
-    --weekend-bg: #fdbeb9;
-    --holiday-bg: #ffc1ff;
+    --base-cell-bg: #ffffff;
+    --weekend-bg: #f5d5d5;
+    --holiday-bg: #f0dddd;
     --vacation-bg: #00b0f0;
     --sick-bg: #f8ddca;
     --urgent-sick-bg: #f5d4e7;
-    --manual-bg: #fff1a8;
-    --off-bg: #ffc1ff;
+    --manual-bg: #ffffff;
+    --off-bg: #ffffff;
+    --dayoff-bg: #d7f4e4;
     --app-bg: #eef2f7;
     --surface: #ffffff;
     --radius-lg: 18px;
@@ -296,6 +297,11 @@ body.sidebar-open {
     border-color: #b7daf6;
 }
 
+.absence-otgul {
+    background: #eefcf4;
+    border-color: #b8e7cb;
+}
+
 .absence-bolnichny,
 .absence-srochny {
     background: #fff7f0;
@@ -404,7 +410,7 @@ body.sidebar-open {
 }
 
 .legend-work { background: var(--base-cell-bg); }
-.legend-reserve { background: #fff1a8; }
+.legend-dayoff { background: #d7f4e4; }
 .legend-weekend { background: var(--weekend-bg); }
 .legend-holiday { background: var(--holiday-bg); }
 .legend-vacation { background: var(--vacation-bg); }
@@ -557,11 +563,11 @@ body.sidebar-open {
 }
 
 .is-worked {
-    --cell-fill: var(--base-cell-bg);
+    --cell-fill: #ffffff;
 }
 
 .is-off {
-    --cell-fill: var(--off-bg);
+    --cell-fill: #ffffff;
 }
 
 .is-weekend {
@@ -590,13 +596,18 @@ body.sidebar-open {
     color: #8a3b00;
 }
 
+.absence-dayoff-cell {
+    --cell-fill: var(--dayoff-bg);
+    color: #0d5f37;
+}
+
 .absence-urgent-cell {
     --cell-fill: var(--urgent-sick-bg);
     color: #8b165b;
 }
 
 .manual-work-cell {
-    --cell-fill: var(--manual-bg);
+    --cell-fill: #ffffff;
 }
 
 .stat-col,
