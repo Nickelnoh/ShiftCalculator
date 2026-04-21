@@ -17,7 +17,16 @@ const STORAGE_KEYS = {
     graphs: "ssc_graphs",
     activeId: "ssc_activeId",
     absences: "ssc_absences",
-    cellHeight: "ssc_cellHeight"
+    cellHeight: "ssc_cellHeight",
+    overrides: "ssc_cellOverrides"
+};
+
+const SUPABASE_TABLES = {
+    settings: "app_settings",
+    graphs: "graphs",
+    shifts: "shifts",
+    absences: "absences",
+    overrides: "cell_overrides"
 };
 
 const CELL_HEIGHT_MIN = 44;
@@ -31,22 +40,24 @@ let currentYear = DEFAULT_YEAR;
 let graphs = [];
 let activeGraphId = "";
 let absences = [];
+let cellOverrides = [];
 let currentCellHeight = DEFAULT_CELL_HEIGHT;
 let currentZoom = 100;
 let fullscreenModalInstance = null;
-
-const SUPABASE_TABLES = {
-    settings: "app_settings",
-    graphs: "graphs",
-    shifts: "shifts",
-    absences: "absences"
-};
+let shareModalInstance = null;
+let cellEditModalInstance = null;
 
 let supabaseClient = null;
 let remoteSaveTimer = null;
 let remoteSavePromise = Promise.resolve();
 let hasRemoteStateLoaded = false;
 let currentAppKey = "";
+let availableRemoteTables = new Set([SUPABASE_TABLES.settings, SUPABASE_TABLES.graphs, SUPABASE_TABLES.shifts, SUPABASE_TABLES.absences]);
+
+let isReadOnlyMode = false;
+let readOnlyGraphId = "";
+let pendingCreatedGraphId = "";
+let editingCellContext = null;
 
 function uid(prefix = "id") {
     return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
@@ -178,17 +189,35 @@ function normalizeGraph(graph, index) {
     };
 }
 
+function normalizeAbsenceType(type) {
+    if (type === "Срочный больничный") return "Срочный больничный";
+    if (type === "Больничный") return "Больничный";
+    return "Отпуск";
+}
+
 function normalizeAbsence(absence) {
     return {
         id: toId(absence?.id || uid("absence")),
         graphId: toId(absence?.graphId),
         smenaId: toId(absence?.smenaId),
-        type: absence?.type === "Больничный" ? "Больничный" : "Отпуск",
+        type: normalizeAbsenceType(absence?.type),
         start: normalizeIsoDate(absence?.start, currentYear),
         end: normalizeIsoDate(absence?.end, currentYear)
     };
 }
 
+function normalizeOverride(override) {
+    return {
+        id: toId(override?.id || uid("override")),
+        graphId: toId(override?.graphId),
+        smenaId: toId(override?.smenaId),
+        date: normalizeIsoDate(override?.date, currentYear),
+        mode: String(override?.mode || "auto"),
+        hours: clamp(parseInt(override?.hours, 10) || 0, 0, 24),
+        night: clamp(parseInt(override?.night, 10) || 0, 0, 24),
+        absenceType: override?.absenceType ? normalizeAbsenceType(override.absenceType) : ""
+    };
+}
 
 function readLegacyLocalState() {
     const localYear = clamp(parseInt(localStorage.getItem(STORAGE_KEYS.year), 10) || DEFAULT_YEAR, 2000, 2100);
@@ -207,38 +236,18 @@ function readLegacyLocalState() {
         ? rawAbsences.map(normalizeAbsence).filter(item => item.start <= item.end)
         : [];
 
+    const rawOverrides = safeParseJSON(localStorage.getItem(STORAGE_KEYS.overrides), []);
+    const localOverrides = Array.isArray(rawOverrides)
+        ? rawOverrides.map(normalizeOverride)
+        : [];
+
     return {
         year: localYear,
         graphs: localGraphs,
         activeId: localActiveId,
         absences: localAbsences,
-        cellHeight: localCellHeight
-    };
-}
-
-function buildStateSnapshot() {
-    return {
-        year: currentYear,
-        graphs: graphs.map((graph) => ({
-            id: graph.id,
-            name: graph.name,
-            type: graph.type,
-            firstShiftDate: graph.firstShiftDate,
-            smeny: graph.smeny.map((smena) => ({
-                id: smena.id,
-                name: smena.name
-            }))
-        })),
-        activeId: activeGraphId,
-        absences: absences.map((item) => ({
-            id: item.id,
-            graphId: item.graphId,
-            smenaId: item.smenaId,
-            type: item.type,
-            start: item.start,
-            end: item.end
-        })),
-        cellHeight: currentCellHeight
+        cellHeight: localCellHeight,
+        overrides: localOverrides
     };
 }
 
@@ -247,21 +256,26 @@ function applySnapshot(snapshot) {
     currentYear = clamp(parseInt(safeState.year, 10) || DEFAULT_YEAR, 2000, 2100);
     currentCellHeight = clamp(parseInt(safeState.cellHeight, 10) || DEFAULT_CELL_HEIGHT, CELL_HEIGHT_MIN, CELL_HEIGHT_MAX);
 
-    const incomingGraphs = Array.isArray(safeState.graphs) && safeState.graphs.length
+    graphs = Array.isArray(safeState.graphs) && safeState.graphs.length
         ? safeState.graphs.map(normalizeGraph)
         : [createDefaultGraph()];
-
-    graphs = incomingGraphs;
 
     const savedActiveId = toId(safeState.activeId);
     activeGraphId = graphs.some(graph => graph.id === savedActiveId) ? savedActiveId : graphs[0].id;
 
-    const knownShiftIds = new Set(graphs.flatMap((graph) => graph.smeny.map((smena) => smena.id)));
-    const knownGraphIds = new Set(graphs.map((graph) => graph.id));
+    const knownShiftIds = new Set(graphs.flatMap(graph => graph.smeny.map(smena => smena.id)));
+    const knownGraphIds = new Set(graphs.map(graph => graph.id));
+
     absences = Array.isArray(safeState.absences)
         ? safeState.absences
             .map(normalizeAbsence)
-            .filter((item) => item.start <= item.end && knownGraphIds.has(item.graphId) && knownShiftIds.has(item.smenaId))
+            .filter(item => item.start <= item.end && knownGraphIds.has(item.graphId) && knownShiftIds.has(item.smenaId))
+        : [];
+
+    cellOverrides = Array.isArray(safeState.overrides)
+        ? safeState.overrides
+            .map(normalizeOverride)
+            .filter(item => knownGraphIds.has(item.graphId) && knownShiftIds.has(item.smenaId))
         : [];
 }
 
@@ -277,6 +291,7 @@ function writeLocalSnapshot() {
         localStorage.setItem(STORAGE_KEYS.activeId, activeGraphId);
         localStorage.setItem(STORAGE_KEYS.absences, JSON.stringify(absences));
         localStorage.setItem(STORAGE_KEYS.cellHeight, String(currentCellHeight));
+        localStorage.setItem(STORAGE_KEYS.overrides, JSON.stringify(cellOverrides));
     } catch (error) {
         console.error("Ошибка сохранения в localStorage", error);
         alert("Не удалось сохранить данные в браузере.");
@@ -313,6 +328,39 @@ function ensureSupabaseClient() {
     return supabaseClient;
 }
 
+function isMissingRelationError(error) {
+    if (!error) return false;
+    const text = `${error.message || ""} ${error.details || ""} ${error.hint || ""}`.toLowerCase();
+    return error.code === "42P01" || error.code === "PGRST205" || text.includes("relation") && text.includes("does not exist") || text.includes("could not find the table");
+}
+
+async function selectRemoteRows(client, tableName, columns, appKey, orderColumn = "sort_order") {
+    const query = client.from(tableName).select(columns).eq("app_key", appKey);
+    const response = orderColumn ? await query.order(orderColumn, { ascending: true }) : await query;
+    if (response.error) {
+        if (isMissingRelationError(response.error)) {
+            availableRemoteTables.delete(tableName);
+            return [];
+        }
+        throw response.error;
+    }
+    availableRemoteTables.add(tableName);
+    return response.data || [];
+}
+
+async function maybeSingleRemote(client, tableName, columns, appKey) {
+    const response = await client.from(tableName).select(columns).eq("app_key", appKey).maybeSingle();
+    if (response.error) {
+        if (isMissingRelationError(response.error)) {
+            availableRemoteTables.delete(tableName);
+            return null;
+        }
+        throw response.error;
+    }
+    availableRemoteTables.add(tableName);
+    return response.data || null;
+}
+
 async function loadFromSupabase() {
     const client = ensureSupabaseClient();
     if (!client) {
@@ -323,24 +371,13 @@ async function loadFromSupabase() {
     currentAppKey = config.appKey;
 
     try {
-        const [settingsResponse, graphsResponse, shiftsResponse, absencesResponse] = await Promise.all([
-            client.from(SUPABASE_TABLES.settings).select("year, active_graph_id, cell_height").eq("app_key", config.appKey).maybeSingle(),
-            client.from(SUPABASE_TABLES.graphs).select("id, name, type, first_shift_date, sort_order").eq("app_key", config.appKey).order("sort_order", { ascending: true }),
-            client.from(SUPABASE_TABLES.shifts).select("id, graph_id, name, sort_order").eq("app_key", config.appKey).order("sort_order", { ascending: true }),
-            client.from(SUPABASE_TABLES.absences).select("id, graph_id, shift_id, absence_type, start_date, end_date").eq("app_key", config.appKey).order("start_date", { ascending: true })
-        ]);
+        const settingsRow = await maybeSingleRemote(client, SUPABASE_TABLES.settings, "year, active_graph_id, cell_height", config.appKey);
+        const graphRows = await selectRemoteRows(client, SUPABASE_TABLES.graphs, "id, name, type, first_shift_date, sort_order", config.appKey, "sort_order");
+        const shiftRows = await selectRemoteRows(client, SUPABASE_TABLES.shifts, "id, graph_id, name, sort_order", config.appKey, "sort_order");
+        const absenceRows = await selectRemoteRows(client, SUPABASE_TABLES.absences, "id, graph_id, shift_id, absence_type, start_date, end_date", config.appKey, "start_date");
+        const overrideRows = await selectRemoteRows(client, SUPABASE_TABLES.overrides, "id, graph_id, shift_id, work_date, mode, hours, night, absence_type", config.appKey, "work_date");
 
-        if (settingsResponse.error) throw settingsResponse.error;
-        if (graphsResponse.error) throw graphsResponse.error;
-        if (shiftsResponse.error) throw shiftsResponse.error;
-        if (absencesResponse.error) throw absencesResponse.error;
-
-        const graphRows = graphsResponse.data || [];
-        const shiftRows = shiftsResponse.data || [];
-        const absenceRows = absencesResponse.data || [];
-        const settingsRow = settingsResponse.data;
-
-        if (!settingsRow && !graphRows.length && !shiftRows.length && !absenceRows.length) {
+        if (!settingsRow && !graphRows.length && !shiftRows.length && !absenceRows.length && !overrideRows.length) {
             hasRemoteStateLoaded = true;
             return false;
         }
@@ -351,7 +388,7 @@ async function loadFromSupabase() {
             type: graphRow.type === "12" ? "12" : "24",
             firstShiftDate: normalizeIsoDate(graphRow.first_shift_date, currentYear),
             smeny: shiftRows
-                .filter((shiftRow) => toId(shiftRow.graph_id) === toId(graphRow.id))
+                .filter(shiftRow => toId(shiftRow.graph_id) === toId(graphRow.id))
                 .map((shiftRow, shiftIndex) => ({
                     id: toId(shiftRow.id),
                     name: normalizeShiftName(shiftRow.name, shiftIndex)
@@ -362,9 +399,20 @@ async function loadFromSupabase() {
             id: toId(absenceRow.id),
             graphId: toId(absenceRow.graph_id),
             smenaId: toId(absenceRow.shift_id),
-            type: absenceRow.absence_type === "Больничный" ? "Больничный" : "Отпуск",
+            type: normalizeAbsenceType(absenceRow.absence_type),
             start: normalizeIsoDate(absenceRow.start_date, currentYear),
             end: normalizeIsoDate(absenceRow.end_date, currentYear)
+        }));
+
+        const remoteOverrides = overrideRows.map((overrideRow) => ({
+            id: toId(overrideRow.id),
+            graphId: toId(overrideRow.graph_id),
+            smenaId: toId(overrideRow.shift_id),
+            date: normalizeIsoDate(overrideRow.work_date, currentYear),
+            mode: String(overrideRow.mode || "auto"),
+            hours: clamp(parseInt(overrideRow.hours, 10) || 0, 0, 24),
+            night: clamp(parseInt(overrideRow.night, 10) || 0, 0, 24),
+            absenceType: normalizeAbsenceType(overrideRow.absence_type || "")
         }));
 
         applySnapshot({
@@ -372,7 +420,8 @@ async function loadFromSupabase() {
             activeId: settingsRow?.active_graph_id ?? "",
             cellHeight: settingsRow?.cell_height ?? currentCellHeight,
             graphs: remoteGraphs,
-            absences: remoteAbsences
+            absences: remoteAbsences,
+            overrides: remoteOverrides
         });
 
         writeLocalSnapshot();
@@ -385,18 +434,42 @@ async function loadFromSupabase() {
 }
 
 async function deleteMissingRows(client, tableName, appKey, currentIds) {
+    if (!availableRemoteTables.has(tableName)) {
+        return;
+    }
+
     const { data, error } = await client.from(tableName).select("id").eq("app_key", appKey);
-    if (error) throw error;
+    if (error) {
+        if (isMissingRelationError(error)) {
+            availableRemoteTables.delete(tableName);
+            return;
+        }
+        throw error;
+    }
 
-    const existingIds = (data || []).map((item) => toId(item.id));
-    const idsToDelete = existingIds.filter((id) => !currentIds.includes(id));
-
+    const existingIds = (data || []).map(item => toId(item.id));
+    const idsToDelete = existingIds.filter(id => !currentIds.includes(id));
     if (!idsToDelete.length) {
         return;
     }
 
     const { error: deleteError } = await client.from(tableName).delete().eq("app_key", appKey).in("id", idsToDelete);
-    if (deleteError) throw deleteError;
+    if (deleteError && !isMissingRelationError(deleteError)) {
+        throw deleteError;
+    }
+}
+
+async function upsertMaybe(client, tableName, rows, onConflict) {
+    if (!rows.length) return;
+    const { error } = await client.from(tableName).upsert(rows, { onConflict });
+    if (error) {
+        if (isMissingRelationError(error)) {
+            availableRemoteTables.delete(tableName);
+            return;
+        }
+        throw error;
+    }
+    availableRemoteTables.add(tableName);
 }
 
 async function syncStateToSupabase() {
@@ -407,6 +480,7 @@ async function syncStateToSupabase() {
 
     const config = getSupabaseConfig();
     currentAppKey = config.appKey;
+    const now = new Date().toISOString();
 
     const graphRows = graphs.map((graph, graphIndex) => ({
         id: graph.id,
@@ -415,19 +489,19 @@ async function syncStateToSupabase() {
         type: graph.type,
         first_shift_date: graph.firstShiftDate,
         sort_order: graphIndex,
-        updated_at: new Date().toISOString()
+        updated_at: now
     }));
 
-    const shiftRows = graphs.flatMap((graph) => graph.smeny.map((smena, shiftIndex) => ({
+    const shiftRows = graphs.flatMap(graph => graph.smeny.map((smena, shiftIndex) => ({
         id: smena.id,
         app_key: config.appKey,
         graph_id: graph.id,
         name: normalizeShiftName(smena.name, shiftIndex),
         sort_order: shiftIndex,
-        updated_at: new Date().toISOString()
+        updated_at: now
     })));
 
-    const absenceRows = absences.map((absence) => ({
+    const absenceRows = absences.map(absence => ({
         id: absence.id,
         app_key: config.appKey,
         graph_id: absence.graphId,
@@ -435,7 +509,20 @@ async function syncStateToSupabase() {
         absence_type: absence.type,
         start_date: absence.start,
         end_date: absence.end,
-        updated_at: new Date().toISOString()
+        updated_at: now
+    }));
+
+    const overrideRows = cellOverrides.map(item => ({
+        id: item.id,
+        app_key: config.appKey,
+        graph_id: item.graphId,
+        shift_id: item.smenaId,
+        work_date: item.date,
+        mode: item.mode,
+        hours: item.hours,
+        night: item.night,
+        absence_type: item.absenceType || null,
+        updated_at: now
     }));
 
     try {
@@ -444,34 +531,28 @@ async function syncStateToSupabase() {
             year: currentYear,
             active_graph_id: activeGraphId || null,
             cell_height: currentCellHeight,
-            updated_at: new Date().toISOString()
+            updated_at: now
         }, { onConflict: "app_key" });
-        if (settingsError) throw settingsError;
+        if (settingsError && !isMissingRelationError(settingsError)) throw settingsError;
 
-        if (graphRows.length) {
-            const { error: graphUpsertError } = await client.from(SUPABASE_TABLES.graphs).upsert(graphRows, { onConflict: "id" });
-            if (graphUpsertError) throw graphUpsertError;
-        }
-        await deleteMissingRows(client, SUPABASE_TABLES.graphs, config.appKey, graphRows.map((row) => row.id));
+        await upsertMaybe(client, SUPABASE_TABLES.graphs, graphRows, "id");
+        await deleteMissingRows(client, SUPABASE_TABLES.graphs, config.appKey, graphRows.map(row => row.id));
 
-        if (shiftRows.length) {
-            const { error: shiftUpsertError } = await client.from(SUPABASE_TABLES.shifts).upsert(shiftRows, { onConflict: "id" });
-            if (shiftUpsertError) throw shiftUpsertError;
-        }
-        await deleteMissingRows(client, SUPABASE_TABLES.shifts, config.appKey, shiftRows.map((row) => row.id));
+        await upsertMaybe(client, SUPABASE_TABLES.shifts, shiftRows, "id");
+        await deleteMissingRows(client, SUPABASE_TABLES.shifts, config.appKey, shiftRows.map(row => row.id));
 
-        if (absenceRows.length) {
-            const { error: absenceUpsertError } = await client.from(SUPABASE_TABLES.absences).upsert(absenceRows, { onConflict: "id" });
-            if (absenceUpsertError) throw absenceUpsertError;
-        }
-        await deleteMissingRows(client, SUPABASE_TABLES.absences, config.appKey, absenceRows.map((row) => row.id));
+        await upsertMaybe(client, SUPABASE_TABLES.absences, absenceRows, "id");
+        await deleteMissingRows(client, SUPABASE_TABLES.absences, config.appKey, absenceRows.map(row => row.id));
+
+        await upsertMaybe(client, SUPABASE_TABLES.overrides, overrideRows, "id");
+        await deleteMissingRows(client, SUPABASE_TABLES.overrides, config.appKey, overrideRows.map(row => row.id));
     } catch (error) {
         console.error("Ошибка синхронизации с Supabase", error);
     }
 }
 
 function queueRemoteSave() {
-    if (!isSupabaseConfigured() || !hasRemoteStateLoaded) {
+    if (!isSupabaseConfigured() || !hasRemoteStateLoaded || isReadOnlyMode) {
         return;
     }
 
@@ -489,7 +570,15 @@ function save(options = {}) {
 }
 
 function getActiveGraph() {
-    return graphs.find(graph => graph.id === activeGraphId) || graphs[0] || null;
+    const source = getVisibleGraphs();
+    return source.find(graph => graph.id === activeGraphId) || source[0] || null;
+}
+
+function getVisibleGraphs() {
+    if (isReadOnlyMode && readOnlyGraphId) {
+        return graphs.filter(graph => graph.id === readOnlyGraphId);
+    }
+    return graphs;
 }
 
 function getPattern(type) {
@@ -524,6 +613,54 @@ function getCellSchedule(graph, smenaIndex, dateStr) {
 
 function findAbsence(graphId, smenaId, dateStr) {
     return absences.find(item => item.graphId === graphId && item.smenaId === smenaId && item.start <= dateStr && item.end >= dateStr) || null;
+}
+
+function findOverride(graphId, smenaId, dateStr) {
+    return cellOverrides.find(item => item.graphId === graphId && item.smenaId === smenaId && item.date === dateStr) || null;
+}
+
+function getAbsenceCode(type) {
+    if (type === "Срочный больничный") return "СБ";
+    if (type === "Больничный") return "БЛ";
+    return "ОТ";
+}
+
+function getOverrideAppliedState(override, fallbackSchedule) {
+    if (!override) return null;
+    switch (override.mode) {
+        case "off":
+            return { hours: 0, night: 0, worked: false, code: "", absence: null, manualClass: "" };
+        case "work16":
+            return { hours: 16, night: 2, worked: true, code: "", absence: null, manualClass: "manual-work-cell" };
+        case "work8":
+            return { hours: 8, night: 6, worked: true, code: "", absence: null, manualClass: "manual-work-cell" };
+        case "work12":
+            return { hours: 12, night: 0, worked: true, code: "", absence: null, manualClass: "manual-work-cell" };
+        case "custom":
+            return {
+                hours: clamp(parseInt(override.hours, 10) || 0, 0, 24),
+                night: clamp(parseInt(override.night, 10) || 0, 0, 24),
+                worked: clamp(parseInt(override.hours, 10) || 0, 0, 24) > 0,
+                code: "",
+                absence: null,
+                manualClass: "manual-work-cell"
+            };
+        case "vacation":
+            return { hours: 0, night: 0, worked: false, code: "ОТ", absence: { type: "Отпуск" }, manualClass: "" };
+        case "sick":
+            return { hours: 0, night: 0, worked: false, code: "БЛ", absence: { type: "Больничный" }, manualClass: "" };
+        case "urgent_sick":
+            return { hours: 0, night: 0, worked: false, code: "СБ", absence: { type: "Срочный больничный" }, manualClass: "" };
+        default:
+            return {
+                hours: fallbackSchedule.hours,
+                night: fallbackSchedule.night,
+                worked: fallbackSchedule.hours > 0,
+                code: "",
+                absence: null,
+                manualClass: ""
+            };
+    }
 }
 
 function getProductionMonthStats(year, monthIndex) {
@@ -566,17 +703,32 @@ function buildMonthRowData(graph, smena, smenaIndex, monthIndex) {
         const dateStr = buildIsoDate(currentYear, monthIndex, day);
         const weekend = [0, 6].includes(getWeekday(currentYear, monthIndex, day));
         const holiday = isHoliday(dateStr);
-        const absence = findAbsence(graph.id, smena.id, dateStr);
         const schedule = getCellSchedule(graph, smenaIndex, dateStr);
+        const rangeAbsence = findAbsence(graph.id, smena.id, dateStr);
+        const override = findOverride(graph.id, smena.id, dateStr);
 
         let hours = schedule.hours;
         let night = schedule.night;
+        let worked = hours > 0;
         let code = "";
+        let absence = rangeAbsence;
+        let manualClass = "";
 
-        if (absence) {
+        if (rangeAbsence) {
             hours = 0;
             night = 0;
-            code = absence.type === "Больничный" ? "БЛ" : "ОТ";
+            worked = false;
+            code = getAbsenceCode(rangeAbsence.type);
+        }
+
+        if (override) {
+            const applied = getOverrideAppliedState(override, schedule);
+            hours = applied.hours;
+            night = applied.night;
+            worked = applied.worked;
+            code = applied.code;
+            absence = applied.absence;
+            manualClass = applied.manualClass;
         }
 
         if (hours > 0) {
@@ -594,7 +746,13 @@ function buildMonthRowData(graph, smena, smenaIndex, monthIndex) {
             hours,
             night,
             code,
-            worked: hours > 0
+            worked,
+            graphId: graph.id,
+            smenaId: smena.id,
+            smenaName: smena.name,
+            override,
+            manualClass,
+            isManual: Boolean(override)
         });
     }
 
@@ -608,7 +766,19 @@ function buildMonthRowData(graph, smena, smenaIndex, monthIndex) {
     };
 }
 
+function getAnnualProductionStats() {
+    const totals = { workDays: 0, workHours: 0, offDays: 0 };
+    for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
+        const current = getProductionMonthStats(currentYear, monthIndex);
+        totals.workDays += current.workDays;
+        totals.workHours += current.workHours;
+        totals.offDays += current.offDays;
+    }
+    return totals;
+}
+
 function buildAnnualStats(graph) {
+    const productionTotals = getAnnualProductionStats();
     return graph.smeny.map((smena, smenaIndex) => {
         const stats = { workedDays: 0, hours: 0, night: 0 };
         for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
@@ -617,26 +787,41 @@ function buildAnnualStats(graph) {
             stats.hours += rowData.rowStats.hours;
             stats.night += rowData.rowStats.night;
         }
-        return { smena, ...stats };
+        const diffHours = stats.hours - productionTotals.workHours;
+        return { smena, diffHours, normHours: productionTotals.workHours, ...stats };
     });
 }
 
 function renderGraphs() {
     const container = document.getElementById("graphsContainer");
-    container.innerHTML = graphs.map((graph) => `
+    const visibleGraphs = getVisibleGraphs();
+    container.innerHTML = visibleGraphs.map((graph) => `
         <div class="graph-card ${graph.id === activeGraphId ? "active" : ""}" onclick="selectGraph('${escapeHtml(graph.id)}')">
             <div class="d-flex justify-content-between gap-2 align-items-start">
                 <div>
                     <div class="graph-name">${escapeHtml(graph.name)}</div>
                     <div class="graph-meta">${graph.type === "24" ? "24 часа" : "12 часов"} · ${graph.smeny.length} смен</div>
                 </div>
-                <button class="btn btn-sm btn-link text-danger p-0" onclick="deleteGraph(event, '${escapeHtml(graph.id)}')" title="Удалить график">
-                    <i class="bi bi-x-circle"></i>
-                </button>
+                <div class="graph-card-actions">
+                    <button class="btn btn-sm btn-link text-primary p-0 graph-link-btn" onclick="openShareModal('${escapeHtml(graph.id)}', event)" title="Ссылка только для чтения">
+                        <i class="bi bi-share"></i>
+                    </button>
+                    ${isReadOnlyMode ? "" : `
+                    <button class="btn btn-sm btn-link text-danger p-0 graph-delete-btn" onclick="deleteGraph(event, '${escapeHtml(graph.id)}')" title="Удалить график">
+                        <i class="bi bi-x-circle"></i>
+                    </button>`}
+                </div>
             </div>
             <div class="mt-2">
                 <label class="small text-muted d-block mb-1">Старт цикла</label>
-                <input type="date" class="form-control form-control-sm" value="${escapeHtml(graph.firstShiftDate)}" onclick="event.stopPropagation()" onchange="updateGraphDate('${escapeHtml(graph.id)}', this.value)">
+                <input
+                    type="date"
+                    class="form-control form-control-sm ${isReadOnlyMode ? "readonly-input" : ""}"
+                    value="${escapeHtml(graph.firstShiftDate)}"
+                    onclick="event.stopPropagation()"
+                    onchange="updateGraphDate('${escapeHtml(graph.id)}', this.value)"
+                    ${isReadOnlyMode ? "disabled" : ""}
+                >
             </div>
         </div>
     `).join("");
@@ -645,7 +830,6 @@ function renderGraphs() {
 function renderSmeny() {
     const graph = getActiveGraph();
     const container = document.getElementById("smenyList");
-
     if (!graph) {
         container.innerHTML = "";
         return;
@@ -656,14 +840,16 @@ function renderSmeny() {
             <div class="employee-badge">${index + 1}</div>
             <input
                 type="text"
-                class="form-control form-control-sm"
+                class="form-control form-control-sm ${isReadOnlyMode ? "readonly-input" : ""}"
                 value="${escapeHtml(smena.name)}"
                 onchange="renameSmena('${escapeHtml(smena.id)}', this.value)"
                 onblur="renameSmena('${escapeHtml(smena.id)}', this.value)"
+                ${isReadOnlyMode ? "disabled" : ""}
             >
+            ${isReadOnlyMode ? "" : `
             <button onclick="deleteSmena(event, '${escapeHtml(smena.id)}')" class="btn btn-sm text-danger" title="Удалить смену">
                 <i class="bi bi-trash"></i>
-            </button>
+            </button>`}
         </div>
     `).join("");
 }
@@ -671,29 +857,29 @@ function renderSmeny() {
 function renderAbsences() {
     const graph = getActiveGraph();
     const container = document.getElementById("absencesList");
-
     if (!graph) {
         container.innerHTML = "";
         return;
     }
 
     const list = absences.filter(item => item.graphId === graph.id);
-
     if (!list.length) {
-        container.innerHTML = '<div class="empty-note">Отсутствия не добавлены.</div>';
+        container.innerHTML = '<div class="empty-note">Отвлечения не добавлены.</div>';
         return;
     }
 
     container.innerHTML = list.map((absence) => {
         const smena = graph.smeny.find(item => item.id === absence.smenaId);
-        const className = absence.type === "Больничный" ? "absence-bolnichny" : "absence-otpusk";
-        const icon = absence.type === "Больничный" ? "🏥" : "🏖️";
+        const isVacation = absence.type === "Отпуск";
+        const isUrgent = absence.type === "Срочный больничный";
+        const className = isVacation ? "absence-otpusk" : (isUrgent ? "absence-srochny" : "absence-bolnichny");
+        const icon = isVacation ? "🏖️" : (isUrgent ? "🚑" : "🏥");
         return `
             <div class="employee-item small ${className}">
                 <div><b>${icon} ${escapeHtml(absence.type)}</b></div>
                 <div>${escapeHtml(smena?.name || "Удаленная смена")}</div>
                 <div>${escapeHtml(absence.start)} — ${escapeHtml(absence.end)}</div>
-                <button onclick="deleteAbsence(event, '${escapeHtml(absence.id)}')" class="btn btn-sm btn-link text-danger p-0 mt-1">Удалить</button>
+                ${isReadOnlyMode ? "" : `<button onclick="deleteAbsence(event, '${escapeHtml(absence.id)}')" class="btn btn-sm btn-link text-danger p-0 mt-1">Удалить</button>`}
             </div>
         `;
     }).join("");
@@ -701,15 +887,14 @@ function renderAbsences() {
 
 function renderActiveGraphInfo(graph) {
     const container = document.getElementById("activeGraphInfo");
+    const modeBanner = document.getElementById("modeBanner");
     if (!graph) {
         container.innerHTML = "";
+        modeBanner.classList.add("d-none");
         return;
     }
 
-    const patternLabel = graph.type === "24"
-        ? "24 часа"
-        : "12 часов";
-
+    const patternLabel = graph.type === "24" ? "24 часа" : "12 часов";
     container.innerHTML = `
         <div class="info-strip">
             <span class="info-strip-name">${escapeHtml(graph.name)}</span>
@@ -717,8 +902,16 @@ function renderActiveGraphInfo(graph) {
             <span class="info-strip-meta">Старт: ${escapeHtml(graph.firstShiftDate)}</span>
             <span class="info-strip-meta">Смен: ${graph.smeny.length}</span>
             <span class="info-strip-meta">Год: ${currentYear}${isLeapYear(currentYear) ? " · високосный" : ""}</span>
+            ${isReadOnlyMode ? '<span class="info-strip-badge"><i class="bi bi-eye me-1"></i>Только чтение</span>' : ''}
         </div>
     `;
+
+    if (isReadOnlyMode) {
+        modeBanner.textContent = "Открыт режим чтения: редактирование отключено, доступен только просмотр и экспорт текущего графика.";
+        modeBanner.classList.remove("d-none");
+    } else {
+        modeBanner.classList.add("d-none");
+    }
 }
 
 function renderAnnualSummary(graph) {
@@ -729,23 +922,33 @@ function renderAnnualSummary(graph) {
     }
 
     const annualStats = buildAnnualStats(graph);
+    container.innerHTML = annualStats.map((item) => {
+        const diffLabel = item.diffHours > 0
+            ? `<span class="summary-pill over"><i class="bi bi-arrow-up-right"></i>Переработка: +${item.diffHours} ч</span>`
+            : item.diffHours < 0
+                ? `<span class="summary-pill under"><i class="bi bi-arrow-down-right"></i>Недоработка: ${item.diffHours} ч</span>`
+                : `<span class="summary-pill norm"><i class="bi bi-check2"></i>Норма выполнена</span>`;
 
-    container.innerHTML = annualStats.map((item) => `
-        <div class="summary-card">
-            <div class="summary-card-title">${escapeHtml(item.smena.name)}</div>
-            <div class="summary-card-values">
-                <div><span class="summary-value">${item.workedDays}</span><span class="summary-label">дней</span></div>
-                <div><span class="summary-value">${item.hours}</span><span class="summary-label">часов</span></div>
-                <div><span class="summary-value">${item.night}</span><span class="summary-label">ночных</span></div>
+        return `
+            <div class="summary-card">
+                <div class="summary-card-title">${escapeHtml(item.smena.name)}</div>
+                <div class="summary-card-values">
+                    <div><span class="summary-value">${item.workedDays}</span><span class="summary-label">дней</span></div>
+                    <div><span class="summary-value">${item.hours}</span><span class="summary-label">часов</span></div>
+                    <div><span class="summary-value">${item.night}</span><span class="summary-label">ночных</span></div>
+                </div>
+                <div class="summary-card-extra">
+                    <span class="summary-pill norm"><i class="bi bi-clock"></i>Норма: ${item.normHours} ч</span>
+                    ${diffLabel}
+                </div>
             </div>
-        </div>
-    `).join("");
+        `;
+    }).join("");
 }
 
 function renderTable(graph) {
     const wrapper = document.getElementById("scheduleTableWrapper");
     const fullscreenWrapper = document.getElementById("fullscreenTableWrapper");
-
     if (!graph) {
         wrapper.innerHTML = "";
         fullscreenWrapper.innerHTML = "";
@@ -753,16 +956,13 @@ function renderTable(graph) {
     }
 
     const rows = [];
-
     for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
         graph.smeny.forEach((smena, smenaIndex) => {
-            const rowData = buildMonthRowData(graph, smena, smenaIndex, monthIndex);
-            rows.push(rowData);
+            rows.push(buildMonthRowData(graph, smena, smenaIndex, monthIndex));
         });
     }
 
     const headerDays = Array.from({ length: 31 }, (_, index) => `<th class="day-head">${index + 1}</th>`).join("");
-
     const bodyHtml = rows.map((row) => {
         const dayCells = row.cells.map(renderDayCell).join("");
         return `
@@ -822,9 +1022,15 @@ function renderDayCell(cell) {
     }
 
     const classes = ["day-cell"];
+    if (!isReadOnlyMode) classes.push("day-cell-clickable");
+    if (cell.isManual) classes.push("is-manual");
+    if (cell.manualClass) classes.push(cell.manualClass);
 
     if (cell.absence) {
-        classes.push("is-absence", cell.absence.type === "Больничный" ? "absence-sick-cell" : "absence-vacation-cell");
+        const absenceClass = cell.absence.type === "Срочный больничный"
+            ? "absence-urgent-cell"
+            : cell.absence.type === "Больничный" ? "absence-sick-cell" : "absence-vacation-cell";
+        classes.push("is-absence", absenceClass);
     } else if (cell.holiday) {
         classes.push("is-holiday");
     } else if (cell.weekend) {
@@ -838,16 +1044,21 @@ function renderDayCell(cell) {
     const tooltipParts = [cell.dateStr];
     if (cell.worked) tooltipParts.push(`Часы: ${cell.hours}`, `Ночные: ${cell.night}`);
     if (cell.absence) tooltipParts.push(cell.absence.type);
+    if (cell.isManual) tooltipParts.push("Ручная корректировка");
     if (cell.holiday) tooltipParts.push("Праздник");
     else if (cell.weekend) tooltipParts.push("Выходной день календаря");
 
     const topValue = cell.absence ? cell.code : (cell.hours || "");
-    const bottomValue = cell.absence ? "" : (cell.night || "");
+    const bottomValue = cell.absence ? (cell.isManual ? "ручн." : "") : (cell.night || "");
+    const tag = cell.isManual ? '<span class="cell-tag">ручн.</span>' : '';
+    const action = !isReadOnlyMode
+        ? `onclick="openCellEditModal('${escapeHtml(cell.graphId)}','${escapeHtml(cell.smenaId)}','${escapeHtml(cell.dateStr)}')"`
+        : "";
 
     return `
-        <td class="${classes.join(" ")}" title="${escapeHtml(tooltipParts.join(" · "))}">
+        <td class="${classes.join(" ")}" title="${escapeHtml(tooltipParts.join(" · "))}" ${action}>
             <div class="cell-lines">
-                <div class="cell-top">${topValue}</div>
+                <div class="cell-top">${topValue || tag}</div>
                 <div class="cell-bottom">${bottomValue}</div>
             </div>
         </td>
@@ -864,26 +1075,48 @@ function renderAll() {
     renderActiveGraphInfo(graph);
     renderAnnualSummary(graph);
     renderTable(graph);
+    applyUiMode();
 }
 
 function calculateAndRender() {
     renderAll();
 }
 
+function applyUiMode() {
+    const editableIds = ["createGraphButton", "addShiftButton", "addAbsenceButton"];
+    editableIds.forEach((id) => {
+        const element = document.getElementById(id);
+        if (element) {
+            element.classList.toggle("readonly-hide", isReadOnlyMode);
+        }
+    });
+    const yearInput = document.getElementById("currentYear");
+    if (yearInput) {
+        yearInput.disabled = isReadOnlyMode;
+        yearInput.classList.toggle("readonly-input", isReadOnlyMode);
+    }
+}
+
 function updateYear(value) {
-    const parsed = clamp(parseInt(value, 10) || DEFAULT_YEAR, 2000, 2100);
-    currentYear = parsed;
+    if (isReadOnlyMode) return;
+    currentYear = clamp(parseInt(value, 10) || DEFAULT_YEAR, 2000, 2100);
     save();
     renderAll();
 }
 
 function selectGraph(id) {
-    activeGraphId = toId(id);
+    const targetId = toId(id);
+    if (isReadOnlyMode && targetId !== readOnlyGraphId) {
+        return;
+    }
+    activeGraphId = targetId;
     save();
     renderAll();
+    closeSidebar();
 }
 
 function createGraphWithType(type) {
+    if (isReadOnlyMode) return;
     const nameInput = document.getElementById("newGraphName");
     const dateInput = document.getElementById("newFirstShiftDate");
     const name = nameInput.value.trim() || "Новый график";
@@ -899,6 +1132,7 @@ function createGraphWithType(type) {
 
     graphs.push(newGraph);
     activeGraphId = newGraph.id;
+    pendingCreatedGraphId = newGraph.id;
     save();
     renderAll();
 
@@ -906,10 +1140,12 @@ function createGraphWithType(type) {
     dateInput.value = `${currentYear}-01-01`;
 
     bootstrap.Modal.getInstance(document.getElementById("createModal"))?.hide();
+    openShareModal(newGraph.id);
 }
 
 function deleteGraph(event, id) {
     event.stopPropagation();
+    if (isReadOnlyMode) return;
     if (graphs.length === 1) {
         alert("Нельзя удалить последний график.");
         return;
@@ -920,60 +1156,46 @@ function deleteGraph(event, id) {
 
     graphs = graphs.filter(graph => graph.id !== toId(id));
     absences = absences.filter(item => item.graphId !== toId(id));
+    cellOverrides = cellOverrides.filter(item => item.graphId !== toId(id));
     activeGraphId = graphs[0]?.id || "";
     save();
     renderAll();
 }
 
 function updateGraphDate(id, value) {
+    if (isReadOnlyMode) return;
     const graph = graphs.find(item => item.id === toId(id));
-    if (!graph) {
-        return;
-    }
+    if (!graph) return;
     graph.firstShiftDate = normalizeIsoDate(value, currentYear);
     save();
     renderAll();
 }
 
 function addSmena() {
+    if (isReadOnlyMode) return;
     const graph = getActiveGraph();
-    if (!graph) {
-        return;
-    }
-
-    graph.smeny.push({
-        id: uid("shift"),
-        name: `Смена ${graph.smeny.length + 1}`
-    });
+    if (!graph) return;
+    graph.smeny.push({ id: uid("shift"), name: `Смена ${graph.smeny.length + 1}` });
     save();
     renderAll();
 }
 
 function renameSmena(smenaId, value) {
+    if (isReadOnlyMode) return;
     const graph = getActiveGraph();
-    if (!graph) {
-        return;
-    }
+    if (!graph) return;
     const smena = graph.smeny.find(item => item.id === toId(smenaId));
-    if (!smena) {
-        return;
-    }
+    if (!smena) return;
     smena.name = value.trim() || smena.name;
     save();
-    renderGraphs();
-    renderActiveGraphInfo(graph);
-    renderAnnualSummary(graph);
-    renderTable(graph);
-    renderAbsences();
-    renderSmeny();
+    renderAll();
 }
 
 function deleteSmena(event, smenaId) {
     event.stopPropagation();
+    if (isReadOnlyMode) return;
     const graph = getActiveGraph();
-    if (!graph) {
-        return;
-    }
+    if (!graph) return;
     if (graph.smeny.length === 1) {
         alert("Нельзя удалить последнюю смену.");
         return;
@@ -984,11 +1206,13 @@ function deleteSmena(event, smenaId) {
 
     graph.smeny = graph.smeny.filter(item => item.id !== toId(smenaId));
     absences = absences.filter(item => item.smenaId !== toId(smenaId));
+    cellOverrides = cellOverrides.filter(item => item.smenaId !== toId(smenaId));
     save();
     renderAll();
 }
 
 function addAbsenceModal() {
+    if (isReadOnlyMode) return;
     const graph = getActiveGraph();
     if (!graph || !graph.smeny.length) {
         alert("Сначала добавьте хотя бы одну смену.");
@@ -1001,22 +1225,22 @@ function addAbsenceModal() {
 
     document.getElementById("modalStart").value = "";
     document.getElementById("modalEnd").value = "";
+    document.getElementById("modalType").value = "Отпуск";
     new bootstrap.Modal(document.getElementById("absenceModal")).show();
 }
 
 function saveAbsence() {
+    if (isReadOnlyMode) return;
     const graph = getActiveGraph();
-    if (!graph) {
-        return;
-    }
+    if (!graph) return;
 
     const smenaId = toId(document.getElementById("modalSmena").value);
-    const type = document.getElementById("modalType").value === "Больничный" ? "Больничный" : "Отпуск";
+    const type = normalizeAbsenceType(document.getElementById("modalType").value);
     const start = document.getElementById("modalStart").value;
     const end = document.getElementById("modalEnd").value;
 
     if (!smenaId || !start || !end) {
-        alert("Заполните все поля отсутствия.");
+        alert("Заполните все поля отвлечения.");
         return;
     }
 
@@ -1041,12 +1265,125 @@ function saveAbsence() {
 
 function deleteAbsence(event, absenceId) {
     event.stopPropagation();
-    if (!confirm("Удалить это отсутствие?")) {
+    if (isReadOnlyMode) return;
+    if (!confirm("Удалить это отвлечение?")) {
         return;
     }
     absences = absences.filter(item => item.id !== toId(absenceId));
     save();
     renderAll();
+}
+
+function getReadOnlyLink(graphId) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("mode", "read");
+    url.searchParams.set("graph", graphId);
+    return url.toString();
+}
+
+function openShareModal(graphId, event) {
+    event?.stopPropagation?.();
+    const graph = graphs.find(item => item.id === toId(graphId));
+    if (!graph) return;
+    document.getElementById("shareLinkField").value = getReadOnlyLink(graph.id);
+    shareModalInstance ||= new bootstrap.Modal(document.getElementById("shareModal"));
+    shareModalInstance.show();
+}
+
+async function copyShareLink() {
+    const field = document.getElementById("shareLinkField");
+    field.select();
+    field.setSelectionRange(0, field.value.length);
+    try {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(field.value);
+        } else {
+            document.execCommand("copy");
+        }
+        alert("Ссылка скопирована.");
+    } catch {
+        alert("Не удалось автоматически скопировать ссылку. Скопируйте её вручную.");
+    }
+}
+
+function openCellEditModal(graphId, smenaId, dateStr) {
+    if (isReadOnlyMode) return;
+    const graph = graphs.find(item => item.id === toId(graphId));
+    const smena = graph?.smeny.find(item => item.id === toId(smenaId));
+    if (!graph || !smena) return;
+
+    editingCellContext = { graphId: graph.id, smenaId: smena.id, date: dateStr };
+    const existingOverride = findOverride(graph.id, smena.id, dateStr);
+    document.getElementById("cellEditInfo").innerHTML = `
+        <b>${escapeHtml(graph.name)}</b><br>
+        ${escapeHtml(smena.name)} · ${escapeHtml(dateStr)}
+    `;
+
+    document.getElementById("manualMode").value = existingOverride?.mode || "auto";
+    document.getElementById("manualHours").value = existingOverride?.hours ?? 0;
+    document.getElementById("manualNight").value = existingOverride?.night ?? 0;
+    handleManualModeChange();
+
+    cellEditModalInstance ||= new bootstrap.Modal(document.getElementById("cellEditModal"));
+    cellEditModalInstance.show();
+}
+
+function handleManualModeChange() {
+    const mode = document.getElementById("manualMode").value;
+    document.getElementById("manualHoursRow").classList.toggle("d-none", mode !== "custom");
+}
+
+function upsertOverride(override) {
+    const normalized = normalizeOverride(override);
+    const existingIndex = cellOverrides.findIndex((item) => item.graphId === normalized.graphId && item.smenaId === normalized.smenaId && item.date === normalized.date);
+    if (existingIndex >= 0) {
+        cellOverrides[existingIndex] = normalized;
+    } else {
+        cellOverrides.push(normalized);
+    }
+}
+
+function clearCellOverride() {
+    if (!editingCellContext || isReadOnlyMode) return;
+    cellOverrides = cellOverrides.filter((item) => !(item.graphId === editingCellContext.graphId && item.smenaId === editingCellContext.smenaId && item.date === editingCellContext.date));
+    save();
+    renderAll();
+    cellEditModalInstance?.hide();
+}
+
+function saveCellOverride() {
+    if (!editingCellContext || isReadOnlyMode) return;
+    const mode = document.getElementById("manualMode").value;
+    if (mode === "auto") {
+        clearCellOverride();
+        return;
+    }
+
+    const override = {
+        id: uid("override"),
+        graphId: editingCellContext.graphId,
+        smenaId: editingCellContext.smenaId,
+        date: editingCellContext.date,
+        mode,
+        hours: 0,
+        night: 0,
+        absenceType: ""
+    };
+
+    if (mode === "custom") {
+        override.hours = clamp(parseInt(document.getElementById("manualHours").value, 10) || 0, 0, 24);
+        override.night = clamp(parseInt(document.getElementById("manualNight").value, 10) || 0, 0, 24);
+    }
+    if (mode === "vacation") override.absenceType = "Отпуск";
+    if (mode === "sick") override.absenceType = "Больничный";
+    if (mode === "urgent_sick") override.absenceType = "Срочный больничный";
+
+    const existing = findOverride(editingCellContext.graphId, editingCellContext.smenaId, editingCellContext.date);
+    if (existing) override.id = existing.id;
+    upsertOverride(override);
+    save();
+    renderAll();
+    cellEditModalInstance?.hide();
 }
 
 function increaseCellHeight() {
@@ -1072,9 +1409,7 @@ function applyCellHeight() {
 
 function openFullscreen() {
     const graph = getActiveGraph();
-    if (!graph) {
-        return;
-    }
+    if (!graph) return;
     renderTable(graph);
     document.getElementById("fullscreenTitle").textContent = `${graph.name} — весь экран`;
     currentZoom = 100;
@@ -1104,22 +1439,146 @@ function updateZoom() {
     document.getElementById("zoomLevel").textContent = currentZoom;
 }
 
+function openSidebar() {
+    if (window.innerWidth > 991) return;
+    document.body.classList.add("sidebar-open");
+}
+
+function closeSidebar() {
+    document.body.classList.remove("sidebar-open");
+}
+
+function handleResize() {
+    if (window.innerWidth > 991) {
+        closeSidebar();
+    }
+}
+
+function parseReadOnlyMode() {
+    const params = new URLSearchParams(window.location.search);
+    const mode = params.get("mode");
+    const graphId = toId(params.get("graph"));
+    isReadOnlyMode = mode === "read";
+    readOnlyGraphId = graphId;
+}
+
+function applyReadOnlySelection() {
+    if (!isReadOnlyMode) return;
+    const visibleGraphs = getVisibleGraphs();
+    if (!visibleGraphs.length) {
+        isReadOnlyMode = false;
+        readOnlyGraphId = "";
+        return;
+    }
+    activeGraphId = visibleGraphs[0].id;
+}
+
+function buildExportAoa(graph) {
+    const aoa = [];
+    aoa.push([`График сменности: ${graph.name}`]);
+    aoa.push([`Год: ${currentYear}`, `Тип: ${graph.type === "24" ? "24 часа" : "12 часов"}`, `Старт цикла: ${graph.firstShiftDate}`]);
+    aoa.push([]);
+
+    const summary = buildAnnualStats(graph);
+    aoa.push(["Сводка"]);
+    aoa.push(["Смена", "Отработано дней", "Часов", "Ночных", "Норма", "Отклонение"]);
+    summary.forEach((item) => {
+        aoa.push([
+            item.smena.name,
+            item.workedDays,
+            item.hours,
+            item.night,
+            item.normHours,
+            item.diffHours
+        ]);
+    });
+
+    aoa.push([]);
+    aoa.push(["Подробный график"]);
+
+    const header = ["Месяц", "Смена"];
+    for (let day = 1; day <= 31; day += 1) header.push(String(day));
+    header.push("Дней", "Часов", "Ночных", "Норма дней", "Норма часов", "Нераб.");
+    aoa.push(header);
+
+    for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
+        graph.smeny.forEach((smena, smenaIndex) => {
+            const row = buildMonthRowData(graph, smena, smenaIndex, monthIndex);
+            const dayValues = row.cells.map((cell) => {
+                if (cell.kind === "empty") return "";
+                if (cell.absence) return cell.code || getAbsenceCode(cell.absence.type);
+                if (!cell.worked) return "В";
+                return `${cell.hours}/${cell.night}`;
+            });
+            aoa.push([
+                row.monthName,
+                row.smena.name,
+                ...dayValues,
+                row.rowStats.workedDays,
+                row.rowStats.hours,
+                row.rowStats.night,
+                row.productionStats.workDays,
+                row.productionStats.workHours,
+                row.productionStats.offDays
+            ]);
+        });
+    }
+
+    return aoa;
+}
+
+function exportActiveGraphToExcel() {
+    const graph = getActiveGraph();
+    if (!graph) {
+        alert("Нет активного графика для экспорта.");
+        return;
+    }
+    if (!window.XLSX) {
+        alert("Библиотека экспорта не загружена.");
+        return;
+    }
+
+    const aoa = buildExportAoa(graph);
+    const worksheet = XLSX.utils.aoa_to_sheet(aoa);
+    worksheet["!cols"] = [
+        { wch: 14 },
+        { wch: 18 },
+        ...Array.from({ length: 31 }, () => ({ wch: 7 })),
+        { wch: 8 },
+        { wch: 10 },
+        { wch: 10 },
+        { wch: 12 },
+        { wch: 12 },
+        { wch: 10 }
+    ];
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "График");
+    const fileName = `${graph.name.replace(/[^a-zа-я0-9_-]+/gi, "_")}_${currentYear}.xlsx`;
+    XLSX.writeFile(workbook, fileName);
+}
+
+window.addEventListener("resize", handleResize);
 
 window.addEventListener("load", async () => {
+    parseReadOnlyMode();
     normalizeState();
-    document.getElementById("newFirstShiftDate").value = `${currentYear}-01-01`;
-    renderAll();
 
     if (isSupabaseConfigured()) {
         const loaded = await loadFromSupabase();
-        if (loaded) {
-            renderAll();
-        } else {
-            queueRemoteSave();
+        if (!loaded) {
+            hasRemoteStateLoaded = true;
+            if (!isReadOnlyMode) {
+                queueRemoteSave();
+            }
         }
     } else {
         hasRemoteStateLoaded = true;
     }
+
+    applyReadOnlySelection();
+    document.getElementById("newFirstShiftDate").value = `${currentYear}-01-01`;
+    renderAll();
 
     document.getElementById("createModal").addEventListener("show.bs.modal", () => {
         document.getElementById("newFirstShiftDate").value = `${currentYear}-01-01`;
