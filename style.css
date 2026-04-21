@@ -6,11 +6,11 @@
     --text-main: #222;
     --text-muted: #6b7280;
     --base-cell-bg: #ffffff;
-    --weekend-bg: #f87777;
-    --holiday-bg: #ff4d52;
-    --preholiday-bg: #f8dE77;
+    --weekend-bg: #FFADAD;
+    --holiday-bg: #D4A0A0;
+    --preholiday-bg: #E9CBA5;
     --vacation-bg: #8ec9ff;
-    --sick-bg: #aeac56;
+    --sick-bg: #E5E224;
     --urgent-sick-bg: #fff2a8;
     --manual-bg: #ffffff;
     --off-bg: #ffffff;
