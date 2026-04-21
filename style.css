@@ -826,3 +826,56 @@ thead .shift-col {
     pointer-events: none;
     background: #f8fafc;
 }
+
+
+body.read-only-mode {
+    background: #ffffff;
+}
+
+body.read-only-mode #mobileOverlay,
+body.read-only-mode .sidebar,
+body.read-only-mode .topbar,
+body.read-only-mode #annualSummary,
+body.read-only-mode .legend-bar,
+body.read-only-mode .toolbar-schedule {
+    display: none !important;
+}
+
+body.read-only-mode .app-layout {
+    min-height: 100dvh;
+}
+
+body.read-only-mode .main-content {
+    flex: 0 0 100%;
+    max-width: 100%;
+    width: 100%;
+    min-height: 100dvh;
+}
+
+body.read-only-mode .main-scroll {
+    overflow: auto !important;
+}
+
+body.read-only-mode .main-scroll > div {
+    padding: 0 !important;
+}
+
+body.read-only-mode .table-card,
+body.read-only-mode .app-surface-card {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: #ffffff;
+}
+
+body.read-only-mode .schedule-table-wrapper {
+    min-height: 100dvh;
+}
+
+body.read-only-mode .schedule-table {
+    margin: 0;
+}
+
+body.read-only-mode .schedule-table thead th {
+    top: 0;
+}
