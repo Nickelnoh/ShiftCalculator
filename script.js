@@ -741,6 +741,8 @@ function getOverrideAppliedState(override, fallbackSchedule) {
             return { hours: 8, night: 6, worked: true, code: "", absence: null, manualClass: "manual-work-cell" };
         case "work12":
             return { hours: 12, night: 0, worked: true, code: "", absence: null, manualClass: "manual-work-cell" };
+        case "work24":
+            return { hours: 24, night: 8, worked: true, code: "", absence: null, manualClass: "manual-work-cell" };
         case "work8day":
             return { hours: 8, night: 0, worked: true, code: "", absence: null, manualClass: "manual-work-cell" };
         case "custom":
@@ -1280,6 +1282,7 @@ function getAdditionPlan(graphType, remaining) {
         return { mode: "custom", hours: 0, night: 0 };
     }
 
+    if (remaining >= 24) return { mode: "work24", hours: 24, night: 8 };
     if (graphType === "12") {
         if (remaining >= 12) return { mode: "work12", hours: 12, night: 0 };
         if (remaining >= 8) return { mode: "work8day", hours: 8, night: 0 };
@@ -1365,10 +1368,77 @@ function getWorkedRegularShiftIdsForDate(graph, dateStr, excludeSmenaId = "") {
     return ids;
 }
 
+function getRegularShiftEntries(graph) {
+    const stats = buildAnnualStats(graph);
+    return graph.smeny
+        .map((smena, index) => ({ smena, index, stats: stats[index] }))
+        .filter((entry) => entry && normalizeShiftKind(entry.smena.shiftKind) === "regular");
+}
+
+function chooseCoverageKeeperForDate(workedEntries) {
+    return workedEntries.slice().sort((a, b) => {
+        const aManual = a.override && !isAutoBalanceOverride(a.override) ? 0 : 1;
+        const bManual = b.override && !isAutoBalanceOverride(b.override) ? 0 : 1;
+        if (aManual !== bManual) return aManual - bManual;
+
+        const aDiff = Number(a.entry?.stats?.diffHours || 0);
+        const bDiff = Number(b.entry?.stats?.diffHours || 0);
+        if (aDiff !== bDiff) return aDiff - bDiff;
+
+        if ((b.hours || 0) !== (a.hours || 0)) return (b.hours || 0) - (a.hours || 0);
+        return String(a.smenaName || "").localeCompare(String(b.smenaName || ""));
+    })[0] || null;
+}
+
+function collapseDailyRegularCoverage(graph, shiftEntries) {
+    if (!graph || !shiftEntries.length) return;
+
+    for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
+        const daysInMonth = getDaysInMonth(currentYear, monthIndex);
+        for (let day = 1; day <= daysInMonth; day += 1) {
+            const dateStr = buildIsoDate(currentYear, monthIndex, day);
+            const workedEntries = shiftEntries
+                .map((entry) => {
+                    const state = getResolvedCellStateForDate(graph, entry.smena, entry.index, dateStr);
+                    return state?.worked ? { ...state, entry } : null;
+                })
+                .filter(Boolean);
+
+            if (workedEntries.length <= 1) {
+                continue;
+            }
+
+            const keeper = chooseCoverageKeeperForDate(workedEntries);
+            if (!keeper) {
+                continue;
+            }
+
+            const totalHours = workedEntries.reduce((sum, item) => sum + (item.hours || 0), 0);
+            const totalNight = workedEntries.reduce((sum, item) => sum + (item.night || 0), 0);
+            const keeperMode = getAutoModeForHours(totalHours, totalNight);
+
+            for (const item of workedEntries) {
+                item.entry.stats.hours -= item.hours || 0;
+                item.entry.stats.diffHours -= item.hours || 0;
+            }
+
+            upsertOverride(createAutoOverride(graph.id, keeper.smenaId, dateStr, keeperMode.mode, keeperMode.hours, keeperMode.night));
+            keeper.entry.stats.hours += keeperMode.hours || 0;
+            keeper.entry.stats.diffHours += keeperMode.hours || 0;
+
+            workedEntries.forEach((item) => {
+                if (toId(item.smenaId) === toId(keeper.smenaId)) return;
+                upsertOverride(createAutoOverride(graph.id, item.smenaId, dateStr, "off"));
+            });
+        }
+    }
+}
+
 function getAutoModeForHours(hours, night) {
     const safeHours = clamp(parseInt(hours, 10) || 0, 0, 24);
     const safeNight = clamp(parseInt(night, 10) || 0, 0, 24);
     if (safeHours === 0) return { mode: "off", hours: 0, night: 0 };
+    if (safeHours === 24 && safeNight === 8) return { mode: "work24", hours: 24, night: 8 };
     if (safeHours === 16 && safeNight === 2) return { mode: "work16", hours: 16, night: 2 };
     if (safeHours === 8 && safeNight === 6) return { mode: "work8", hours: 8, night: 6 };
     if (safeHours === 12 && safeNight === 0) return { mode: "work12", hours: 12, night: 0 };
@@ -1465,9 +1535,8 @@ function rebalanceGraphToAnnualNorm(graph) {
 
     removeAutoBalanceOverrides(graph.id);
 
-    const shiftEntries = graph.smeny
-        .map((smena, index) => ({ smena, index, stats: buildAnnualStats(graph)[index] }))
-        .filter((entry) => entry && normalizeShiftKind(entry.smena.shiftKind) === "regular");
+    const shiftEntries = getRegularShiftEntries(graph);
+    collapseDailyRegularCoverage(graph, shiftEntries);
 
     for (const sourceEntry of shiftEntries.filter((entry) => entry.stats?.diffHours > 0)) {
         let sourceCells = collectGraphCells(graph, sourceEntry.smena, sourceEntry.index)
@@ -1503,6 +1572,9 @@ function rebalanceGraphToAnnualNorm(graph) {
             applyOverworkBalancing(graph, smena, initialStats.diffHours, cells);
         }
     });
+
+    const finalShiftEntries = getRegularShiftEntries(graph);
+    collapseDailyRegularCoverage(graph, finalShiftEntries);
 
     const finalStats = buildAnnualStats(graph).filter((item, index) => normalizeShiftKind(graph.smeny[index]?.shiftKind) === "regular");
     const unresolved = finalStats.filter((item) => item.diffHours !== 0);
