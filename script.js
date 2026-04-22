@@ -1291,10 +1291,99 @@ function getAdditionPlan(graphType, remaining) {
     return { mode: "custom", hours: remaining, night: 0 };
 }
 
+function getOverrideForBalancingCandidate(cell) {
+    if (!cell.override) return null;
+    return isAutoBalanceOverride(cell.override) ? cell.override : null;
+}
+
+function getResolvedCellStateForDate(graph, smena, smenaIndex, dateStr) {
+    const parts = parseIsoDateParts(dateStr);
+    if (!parts) return null;
+
+    const weekend = [0, 6].includes(getWeekday(parts.year, parts.month - 1, parts.day));
+    const holiday = isHoliday(dateStr);
+    const preholiday = isPreholiday(dateStr);
+    const schedule = getCellSchedule(graph, smena, smenaIndex, dateStr);
+    const rangeAbsence = findAbsence(graph.id, smena.id, dateStr);
+    const override = findOverride(graph.id, smena.id, dateStr);
+
+    let hours = schedule.hours;
+    let night = schedule.night;
+    let worked = hours > 0;
+    let code = "";
+    let absence = rangeAbsence;
+    let manualClass = "";
+
+    if (rangeAbsence) {
+        hours = 0;
+        night = 0;
+        worked = false;
+        code = getAbsenceCode(rangeAbsence.type);
+    }
+
+    if (override) {
+        const applied = getOverrideAppliedState(override, schedule);
+        hours = applied.hours;
+        night = applied.night;
+        worked = applied.worked;
+        code = applied.code;
+        absence = applied.absence;
+        manualClass = applied.manualClass;
+    }
+
+    return {
+        kind: "day",
+        dateStr,
+        weekend,
+        holiday,
+        preholiday,
+        absence,
+        hours,
+        night,
+        code,
+        worked,
+        graphId: graph.id,
+        smenaId: smena.id,
+        smenaName: smena.name,
+        override,
+        manualClass,
+        isManual: Boolean(override),
+        shiftKind: normalizeShiftKind(smena.shiftKind)
+    };
+}
+
+function getWorkedRegularShiftIdsForDate(graph, dateStr, excludeSmenaId = "") {
+    const ids = [];
+    graph.smeny.forEach((smena, smenaIndex) => {
+        if (toId(smena.id) === toId(excludeSmenaId)) return;
+        if (normalizeShiftKind(smena.shiftKind) !== "regular") return;
+        const state = getResolvedCellStateForDate(graph, smena, smenaIndex, dateStr);
+        if (state?.worked) {
+            ids.push(smena.id);
+        }
+    });
+    return ids;
+}
+
+function getAutoModeForHours(hours, night) {
+    const safeHours = clamp(parseInt(hours, 10) || 0, 0, 24);
+    const safeNight = clamp(parseInt(night, 10) || 0, 0, 24);
+    if (safeHours === 0) return { mode: "off", hours: 0, night: 0 };
+    if (safeHours === 16 && safeNight === 2) return { mode: "work16", hours: 16, night: 2 };
+    if (safeHours === 8 && safeNight === 6) return { mode: "work8", hours: 8, night: 6 };
+    if (safeHours === 12 && safeNight === 0) return { mode: "work12", hours: 12, night: 0 };
+    if (safeHours === 8 && safeNight === 0) return { mode: "work8day", hours: 8, night: 0 };
+    return { mode: "custom", hours: safeHours, night: safeNight };
+}
+
+function canUseCellForBalancing(cell) {
+    return !cell.absence && !cell.override;
+}
+
 function applyOverworkBalancing(graph, smena, diffHours, workedCells) {
     let remaining = diffHours;
     const candidates = workedCells
-        .filter((cell) => !cell.absence && !cell.override && cell.hours > 0)
+        .filter((cell) => canUseCellForBalancing(cell) && cell.hours > 0)
         .sort((a, b) => {
             const priorityDiff = getDayAdjustmentPriority(a) - getDayAdjustmentPriority(b);
             if (priorityDiff !== 0) return priorityDiff;
@@ -1313,7 +1402,8 @@ function applyOverworkBalancing(graph, smena, diffHours, workedCells) {
 
         const newHours = Math.max(0, cell.hours - remaining);
         const newNight = Math.min(cell.night || 0, newHours);
-        upsertOverride(createAutoOverride(graph.id, smena.id, cell.dateStr, newHours > 0 ? "custom" : "off", newHours, newNight));
+        const nextMode = getAutoModeForHours(newHours, newNight);
+        upsertOverride(createAutoOverride(graph.id, smena.id, cell.dateStr, nextMode.mode, nextMode.hours, nextMode.night));
         remaining = 0;
         break;
     }
@@ -1324,7 +1414,8 @@ function applyOverworkBalancing(graph, smena, diffHours, workedCells) {
 function applyUnderworkBalancing(graph, smena, deficitHours, freeCells) {
     let remaining = deficitHours;
     const candidates = freeCells
-        .filter((cell) => !cell.absence && !cell.override && !cell.worked)
+        .filter((cell) => canUseCellForBalancing(cell) && !cell.worked)
+        .filter((cell) => getWorkedRegularShiftIdsForDate(graph, cell.dateStr, smena.id).length === 0)
         .sort((a, b) => {
             const priorityDiff = getDayAdjustmentPriority(a) - getDayAdjustmentPriority(b);
             if (priorityDiff !== 0) return priorityDiff;
@@ -1341,12 +1432,69 @@ function applyUnderworkBalancing(graph, smena, deficitHours, freeCells) {
     return remaining;
 }
 
+function transferWorkBetweenShifts(graph, sourceEntry, targetEntry, cell) {
+    const sourceDiff = sourceEntry.stats.diffHours;
+    const targetDeficit = Math.abs(targetEntry.stats.diffHours);
+    if (sourceDiff < cell.hours || targetDeficit < cell.hours) {
+        return false;
+    }
+
+    const workedIds = getWorkedRegularShiftIdsForDate(graph, cell.dateStr);
+    if (workedIds.some((id) => toId(id) !== toId(sourceEntry.smena.id))) {
+        return false;
+    }
+
+    const targetState = getResolvedCellStateForDate(graph, targetEntry.smena, targetEntry.index, cell.dateStr);
+    if (!targetState || targetState.absence || targetState.worked || targetState.override) {
+        return false;
+    }
+
+    upsertOverride(createAutoOverride(graph.id, sourceEntry.smena.id, cell.dateStr, "off"));
+    const targetMode = getAutoModeForHours(cell.hours, cell.night);
+    upsertOverride(createAutoOverride(graph.id, targetEntry.smena.id, cell.dateStr, targetMode.mode, targetMode.hours, targetMode.night));
+
+    sourceEntry.stats.diffHours -= cell.hours;
+    sourceEntry.stats.hours -= cell.hours;
+    targetEntry.stats.diffHours += cell.hours;
+    targetEntry.stats.hours += cell.hours;
+    return true;
+}
+
 function rebalanceGraphToAnnualNorm(graph) {
     if (!graph) return;
 
     removeAutoBalanceOverrides(graph.id);
 
+    const shiftEntries = graph.smeny
+        .map((smena, index) => ({ smena, index, stats: buildAnnualStats(graph)[index] }))
+        .filter((entry) => entry && normalizeShiftKind(entry.smena.shiftKind) === "regular");
+
+    for (const sourceEntry of shiftEntries.filter((entry) => entry.stats?.diffHours > 0)) {
+        let sourceCells = collectGraphCells(graph, sourceEntry.smena, sourceEntry.index)
+            .filter((cell) => canUseCellForBalancing(cell) && cell.worked && cell.hours > 0)
+            .sort((a, b) => {
+                const priorityDiff = getDayAdjustmentPriority(a) - getDayAdjustmentPriority(b);
+                if (priorityDiff !== 0) return priorityDiff;
+                if (b.hours !== a.hours) return b.hours - a.hours;
+                return String(b.dateStr).localeCompare(String(a.dateStr));
+            });
+
+        for (const cell of sourceCells) {
+            if (sourceEntry.stats.diffHours <= 0) break;
+            const targets = shiftEntries
+                .filter((entry) => toId(entry.smena.id) !== toId(sourceEntry.smena.id) && entry.stats?.diffHours < 0)
+                .sort((a, b) => a.stats.diffHours - b.stats.diffHours);
+
+            for (const targetEntry of targets) {
+                if (transferWorkBetweenShifts(graph, sourceEntry, targetEntry, cell)) {
+                    break;
+                }
+            }
+        }
+    }
+
     graph.smeny.forEach((smena, smenaIndex) => {
+        if (normalizeShiftKind(smena.shiftKind) !== "regular") return;
         const initialStats = buildAnnualStats(graph)[smenaIndex];
         if (!initialStats || initialStats.diffHours === 0) return;
 
@@ -1358,10 +1506,10 @@ function rebalanceGraphToAnnualNorm(graph) {
         }
     });
 
-    const finalStats = buildAnnualStats(graph);
+    const finalStats = buildAnnualStats(graph).filter((item, index) => normalizeShiftKind(graph.smeny[index]?.shiftKind) === "regular");
     const unresolved = finalStats.filter((item) => item.diffHours !== 0);
     if (unresolved.length) {
-        console.warn("Не удалось полностью уравнять часы по норме для всех смен", unresolved);
+        console.warn("Не удалось полностью уравнять часы по норме для всех смен без наложения смен в один день", unresolved);
     }
 }
 
