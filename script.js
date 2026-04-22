@@ -64,6 +64,8 @@ let readOnlyGraphId = "";
 let pendingCreatedGraphId = "";
 let editingCellContext = null;
 let currentAbsenceCategory = "planned";
+const AUTO_BALANCE_PREFIX = "autobal";
+
 
 function uid(prefix = "id") {
     return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
@@ -255,6 +257,14 @@ function normalizeAbsence(absence) {
         start: normalizeIsoDate(absence?.start, currentYear),
         end: normalizeIsoDate(absence?.end, currentYear)
     };
+}
+
+function isAutoBalanceOverride(override) {
+    return toId(override?.id).startsWith(`${AUTO_BALANCE_PREFIX}-`);
+}
+
+function buildAutoBalanceOverrideId(graphId, smenaId, dateStr) {
+    return `${AUTO_BALANCE_PREFIX}-${toId(graphId)}-${toId(smenaId)}-${toId(dateStr)}`;
 }
 
 function normalizeOverride(override) {
@@ -1225,6 +1235,136 @@ function renderDayCell(cell) {
     `;
 }
 
+function getDayAdjustmentPriority(cell) {
+    if (cell.holiday) return 4;
+    if (cell.weekend) return 3;
+    if (cell.preholiday) return 2;
+    return 1;
+}
+
+function createAutoOverride(graphId, smenaId, dateStr, mode, hours = 0, night = 0, absenceType = "") {
+    return {
+        id: buildAutoBalanceOverrideId(graphId, smenaId, dateStr),
+        graphId,
+        smenaId,
+        date: dateStr,
+        mode,
+        hours,
+        night,
+        absenceType
+    };
+}
+
+function removeAutoBalanceOverrides(graphId = "") {
+    cellOverrides = cellOverrides.filter((item) => {
+        if (!isAutoBalanceOverride(item)) return true;
+        return graphId ? item.graphId !== toId(graphId) : false;
+    });
+}
+
+function collectGraphCells(graph, smena, smenaIndex) {
+    const result = [];
+    for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
+        const rowData = buildMonthRowData(graph, smena, smenaIndex, monthIndex);
+        rowData.cells.forEach((cell) => {
+            if (cell.kind === "day") {
+                result.push(cell);
+            }
+        });
+    }
+    return result;
+}
+
+function getAdditionPlan(graphType, remaining) {
+    if (remaining <= 0) {
+        return { mode: "custom", hours: 0, night: 0 };
+    }
+
+    if (graphType === "12") {
+        if (remaining >= 12) return { mode: "work12", hours: 12, night: 0 };
+        if (remaining >= 8) return { mode: "work8day", hours: 8, night: 0 };
+        return { mode: "custom", hours: remaining, night: 0 };
+    }
+
+    if (remaining >= 16) return { mode: "work16", hours: 16, night: 2 };
+    if (remaining >= 8) return { mode: "work8day", hours: 8, night: 0 };
+    return { mode: "custom", hours: remaining, night: 0 };
+}
+
+function applyOverworkBalancing(graph, smena, diffHours, workedCells) {
+    let remaining = diffHours;
+    const candidates = workedCells
+        .filter((cell) => !cell.absence && !cell.override && cell.hours > 0)
+        .sort((a, b) => {
+            const priorityDiff = getDayAdjustmentPriority(a) - getDayAdjustmentPriority(b);
+            if (priorityDiff !== 0) return priorityDiff;
+            if (b.hours !== a.hours) return b.hours - a.hours;
+            return String(b.dateStr).localeCompare(String(a.dateStr));
+        });
+
+    for (const cell of candidates) {
+        if (remaining <= 0) break;
+
+        if (remaining >= cell.hours) {
+            upsertOverride(createAutoOverride(graph.id, smena.id, cell.dateStr, "off"));
+            remaining -= cell.hours;
+            continue;
+        }
+
+        const newHours = Math.max(0, cell.hours - remaining);
+        const newNight = Math.min(cell.night || 0, newHours);
+        upsertOverride(createAutoOverride(graph.id, smena.id, cell.dateStr, newHours > 0 ? "custom" : "off", newHours, newNight));
+        remaining = 0;
+        break;
+    }
+
+    return remaining;
+}
+
+function applyUnderworkBalancing(graph, smena, deficitHours, freeCells) {
+    let remaining = deficitHours;
+    const candidates = freeCells
+        .filter((cell) => !cell.absence && !cell.override && !cell.worked)
+        .sort((a, b) => {
+            const priorityDiff = getDayAdjustmentPriority(a) - getDayAdjustmentPriority(b);
+            if (priorityDiff !== 0) return priorityDiff;
+            return String(a.dateStr).localeCompare(String(b.dateStr));
+        });
+
+    for (const cell of candidates) {
+        if (remaining <= 0) break;
+        const plan = getAdditionPlan(graph.type, remaining);
+        upsertOverride(createAutoOverride(graph.id, smena.id, cell.dateStr, plan.mode, plan.hours, plan.night));
+        remaining -= plan.hours;
+    }
+
+    return remaining;
+}
+
+function rebalanceGraphToAnnualNorm(graph) {
+    if (!graph) return;
+
+    removeAutoBalanceOverrides(graph.id);
+
+    graph.smeny.forEach((smena, smenaIndex) => {
+        const initialStats = buildAnnualStats(graph)[smenaIndex];
+        if (!initialStats || initialStats.diffHours === 0) return;
+
+        const cells = collectGraphCells(graph, smena, smenaIndex);
+        if (initialStats.diffHours > 0) {
+            applyOverworkBalancing(graph, smena, initialStats.diffHours, cells);
+        } else {
+            applyUnderworkBalancing(graph, smena, Math.abs(initialStats.diffHours), cells);
+        }
+    });
+
+    const finalStats = buildAnnualStats(graph);
+    const unresolved = finalStats.filter((item) => item.diffHours !== 0);
+    if (unresolved.length) {
+        console.warn("Не удалось полностью уравнять часы по норме для всех смен", unresolved);
+    }
+}
+
 function renderAll() {
     const graph = getActiveGraph();
     document.getElementById("currentYear").value = currentYear;
@@ -1239,6 +1379,14 @@ function renderAll() {
 }
 
 function calculateAndRender() {
+    const graph = getActiveGraph();
+    if (!graph) {
+        renderAll();
+        return;
+    }
+
+    rebalanceGraphToAnnualNorm(graph);
+    save();
     renderAll();
 }
 
