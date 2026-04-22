@@ -83,6 +83,105 @@ function getExportDayCellAppearance(cell) {
     };
 }
 
+
+function addAnnualSummarySection(worksheet, startRow, graph) {
+    const annualStats = buildAnnualStats(graph);
+    const summaryStartCol = 1;
+    const summaryEndCol = 9;
+    const summaryTitleRow = startRow;
+    const summaryHeaderRow = startRow + 1;
+    let currentRow = startRow + 2;
+
+    worksheet.mergeCells(summaryTitleRow, summaryStartCol, summaryTitleRow, summaryEndCol);
+    const titleCell = worksheet.getCell(summaryTitleRow, summaryStartCol);
+    titleCell.value = 'Итоговая сводка по сменам';
+    styleExcelCell(titleCell, {
+        font: { name: 'Times New Roman', size: 12, bold: true },
+        alignment: { horizontal: 'center', vertical: 'middle' },
+        fill: 'FFF2F2F2',
+        border: makeExcelBorder({ top: 'medium', bottom: 'medium', left: 'medium', right: 'medium' })
+    });
+    worksheet.getRow(summaryTitleRow).height = 22;
+
+    const headers = [
+        'Смена',
+        'Факт. дней',
+        'Факт. часов',
+        'Ночных',
+        'Норма часов',
+        'Часы отвлечений',
+        'Плановые отвлечения, дн',
+        'Кратковременные отвлечения, дн',
+        'Баланс'
+    ];
+
+    headers.forEach((header, index) => {
+        const cell = worksheet.getCell(summaryHeaderRow, summaryStartCol + index);
+        cell.value = header;
+        styleExcelCell(cell, {
+            font: { name: 'Times New Roman', size: 11, bold: true },
+            alignment: { horizontal: 'center', vertical: 'middle', wrapText: true },
+            fill: 'FFF2F2F2',
+            border: makeExcelBorder({
+                top: 'medium',
+                bottom: 'medium',
+                left: index === 0 ? 'medium' : 'thin',
+                right: index === headers.length - 1 ? 'medium' : 'thin'
+            })
+        });
+    });
+    worksheet.getRow(summaryHeaderRow).height = 34;
+
+    annualStats.forEach((item, idx) => {
+        const row = currentRow + idx;
+        const balanceLabel = item.diffHours > 0
+            ? `Переработка +${item.diffHours} ч`
+            : item.diffHours < 0
+                ? `Недоработка ${Math.abs(item.diffHours)} ч`
+                : 'Норма выполнена';
+
+        const values = [
+            item.smena.name,
+            item.workedDays,
+            item.hours,
+            item.night,
+            item.normHours,
+            item.absenceHours,
+            item.plannedAbsenceDays,
+            item.shortAbsenceDays,
+            balanceLabel
+        ];
+
+        values.forEach((value, index) => {
+            const cell = worksheet.getCell(row, summaryStartCol + index);
+            cell.value = value;
+            styleExcelCell(cell, {
+                font: { name: 'Times New Roman', size: 11 },
+                alignment: { horizontal: index === 0 || index === 8 ? 'left' : 'center', vertical: 'middle', wrapText: true },
+                border: makeExcelBorder({
+                    top: 'thin',
+                    bottom: idx === annualStats.length - 1 ? 'medium' : 'thin',
+                    left: index === 0 ? 'medium' : 'thin',
+                    right: index === headers.length - 1 ? 'medium' : 'thin'
+                })
+            });
+        });
+        worksheet.getRow(row).height = 22;
+    });
+
+    worksheet.getColumn(1).width = 22;
+    worksheet.getColumn(2).width = 12;
+    worksheet.getColumn(3).width = 14;
+    worksheet.getColumn(4).width = 12;
+    worksheet.getColumn(5).width = 14;
+    worksheet.getColumn(6).width = 16;
+    worksheet.getColumn(7).width = 20;
+    worksheet.getColumn(8).width = 24;
+    worksheet.getColumn(9).width = 18;
+
+    return currentRow + annualStats.length;
+}
+
 async function exportActiveGraphToExcel() {
     const graph = getActiveGraph();
     if (!graph) {
@@ -306,6 +405,9 @@ async function exportActiveGraphToExcel() {
             currentRow += 2;
         }
     }
+
+    currentRow += 2;
+    addAnnualSummarySection(worksheet, currentRow, graph);
 
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob(
