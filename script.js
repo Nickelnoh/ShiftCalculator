@@ -1501,15 +1501,13 @@ function rebalanceGraphToAnnualNorm(graph) {
         const cells = collectGraphCells(graph, smena, smenaIndex);
         if (initialStats.diffHours > 0) {
             applyOverworkBalancing(graph, smena, initialStats.diffHours, cells);
-        } else {
-            applyUnderworkBalancing(graph, smena, Math.abs(initialStats.diffHours), cells);
         }
     });
 
     const finalStats = buildAnnualStats(graph).filter((item, index) => normalizeShiftKind(graph.smeny[index]?.shiftKind) === "regular");
     const unresolved = finalStats.filter((item) => item.diffHours !== 0);
     if (unresolved.length) {
-        console.warn("Не удалось полностью уравнять часы по норме для всех смен без наложения смен в один день", unresolved);
+        console.warn("Не удалось полностью уравнять часы по норме без добавления дополнительных смен в те же даты. Для недоработки используйте подменную смену или ручную корректировку.", unresolved);
     }
 }
 
